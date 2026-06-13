@@ -395,40 +395,7 @@ while (!$intro->update()) {
 
     my $state = $intro->state;
 
-    if ($state eq 'FLASH') {
-        # Яркий ореол вокруг логотипа
-        my $half_w = $intro->logo_w / 2;
-        my $half_h = $intro->logo_h / 2;
-        my $glow_margin = 40;   # насколько ореол больше логотипа
-        my $glow_x = ($intro->win_w - $half_w) / 2 - $glow_margin;
-        my $glow_y = ($intro->win_h - $half_h) / 2 - $glow_margin;
-        my $glow_w = $half_w + $glow_margin * 2;
-        my $glow_h = $half_h + $glow_margin * 2;
-
-        SDL_SetRenderDrawBlendMode($renderer, 1);
-        SDL_SetRenderDrawColor($renderer, 255, 255, 255, 180);   # белый полупрозрачный
-        my $rect_pack = pack('iiii', $glow_x, $glow_y, $glow_w, $glow_h);
-        my $rect_ptr = malloc(16);
-        memcpy($rect_ptr, $ffi->cast('string'=>'opaque', $rect_pack), 16);
-        SDL_RenderFillRect($renderer, $rect_ptr);
-        free($rect_ptr);
-        SDL_SetRenderDrawBlendMode($renderer, 0);
-
-        # Сам логотип поверх ореола (яркий, без прозрачности)
-        my $dx = ($intro->win_w - $half_w) / 2;
-        my $dy = ($intro->win_h - $half_h) / 2;
-        my $src_pack = pack('iiii', 0, 0, $intro->logo_w, $intro->logo_h);
-        my $dst_pack = pack('iiii', $dx, $dy, $half_w, $half_h);
-        my $src_rect = malloc(16);
-        my $dst_rect = malloc(16);
-        memcpy($src_rect, $ffi->cast('string'=>'opaque', $src_pack), 16);
-        memcpy($dst_rect, $ffi->cast('string'=>'opaque', $dst_pack), 16);
-        SDL_RenderCopy($renderer, $intro->logo_tex, $src_rect, $dst_rect);
-        free($src_rect);
-        free($dst_rect);
-    }
-
-    elsif ($state ne 'BLACK_WAIT' && $state ne 'DONE' && $state ne 'FLASH') {
+    if ($state ne 'BLACK_WAIT' && $state ne 'DONE') {
         if ($state ne 'FLICKER' || $intro->flicker_visible) {
             # Рисуем логотип (уменьшенный)
             my $half_w = $intro->logo_w / 2;
@@ -444,11 +411,11 @@ while (!$intro->update()) {
             my $dst_rect = malloc(16);
             memcpy($dst_rect, $ffi->cast('string'=>'opaque', $dst_pack), 16);
 
-            if ($state eq 'FADE_OUT') {
+            if ($state eq 'FADE_OUT' || $state eq 'FADE_IN') {
                 SDL_SetTextureAlphaMod($intro->logo_tex, $intro->fade_alpha);
             }
             SDL_RenderCopy($renderer, $intro->logo_tex, $src_rect, $dst_rect);
-            if ($state eq 'FADE_OUT') {
+            if ($state eq 'FADE_OUT' || $state eq 'FADE_IN') {
                 SDL_SetTextureAlphaMod($intro->logo_tex, 255);
             }
             free($src_rect);

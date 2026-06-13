@@ -39,7 +39,7 @@ sub update {
     elsif ($self->{state} eq 'FLICKER') {
         my $flick_elapsed = $now - $self->{start_ticks};
         if ($flick_elapsed >= 2000) {
-            $self->{state} = 'FLASH';
+            $self->{state} = 'FADE_IN';
             $self->{start_ticks} = $now;
             $self->{flicker_visible} = 1;
         } else {
@@ -49,10 +49,15 @@ sub update {
             }
         }
     }
-    elsif ($self->{state} eq 'FLASH') {
-        if ($now - $self->{start_ticks} >= 100) {
+    elsif ($self->{state} eq 'FADE_IN') {
+        my $fade_elapsed = $now - $self->{start_ticks};
+        if ($fade_elapsed >= 800) {
             $self->{state} = 'STEADY';
             $self->{start_ticks} = $now;
+            $self->{fade_alpha} = 255;
+        } else {
+            $self->{fade_alpha} = int(255 * ($fade_elapsed / 800));
+            $self->{fade_alpha} = 255 if $self->{fade_alpha} > 255;
         }
     }
     elsif ($self->{state} eq 'STEADY') {

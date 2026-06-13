@@ -29,7 +29,6 @@ sub update {
     my $vx = $self->{speed} * sin($angle_rad);
     my $vy = $self->{speed} * cos($angle_rad);
 
-    # Двигаем существующие капли
     foreach my $d (@{$self->{drops}}) {
         my $prev_y = $d->{y};
         $d->{x} += $vx;
@@ -59,24 +58,20 @@ sub update {
             }
         }
 
-        # Удаляем каплю, если она вышла далеко за экран или за границы карты
         if ($d->{y} > $cam_y + 800 || $d->{x} < -100 || $d->{x} > $map_w + 100) {
             $d = undef;
         }
     }
     @{$self->{drops}} = grep defined, @{$self->{drops}};
 
-    # Пополняем капли по всей ширине карты вокруг камеры
     my $needed = $self->{max_drops} - scalar @{$self->{drops}};
     my $to_spawn = $needed < $self->{spawn_rate} ? $needed : $self->{spawn_rate};
 
     for (1 .. $to_spawn) {
-        # X: от cam_x - 100 до cam_x + 900 (ширина экрана + запас)
         my $spawn_x = $cam_x - 100 + int(rand(1000));
         $spawn_x = 0 if $spawn_x < 0;
         $spawn_x = $map_w - 1 if $spawn_x >= $map_w;
 
-        # Y: от cam_y - 100 до cam_y + 700
         my $spawn_y = $cam_y - 100 + int(rand(800));
         $spawn_y = 0 if $spawn_y < 0;
         $spawn_y = $map_h - 1 if $spawn_y >= $map_h;
@@ -87,7 +82,6 @@ sub update {
         };
     }
 
-    # Обновляем брызги
     foreach my $s (@{$self->{splashes}}) { $s->{life}--; }
     @{$self->{splashes}} = grep { $_->{life} > 0 } @{$self->{splashes}};
 }
@@ -115,6 +109,12 @@ sub draw {
             $draw_line->($px, $py, $ex, $ey);
         }
     }
+}
+
+sub clear {
+    my $self = shift;
+    @{$self->{drops}} = ();
+    @{$self->{splashes}} = ();
 }
 
 1;

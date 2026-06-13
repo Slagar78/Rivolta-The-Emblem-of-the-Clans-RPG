@@ -224,6 +224,14 @@ my $camera = Camera->new(
 
 my $rain = Rain->new( max_drops => 200, length => 26, speed => 9, angle => 25 );
 
+# Управление дождём по реальному времени
+my $rain_scheduled = 0;       # запланирован ли дождь в текущем часе
+my $rain_active    = 0;       # идёт ли дождь сейчас
+my $rain_start_time = 0;
+my $rain_end_time   = 0;
+my $rain_minute     = 0;      # минута запуска
+my $last_rain_hour  = -1;     # час, для которого уже сгенерирована минута
+
 # --- Меню 4 кнопки ---
 my @button_textures;
 for my $i (1..4) {
@@ -374,6 +382,29 @@ while ($running) {
         }
     }
 
+    # --- Расписание дождя ---
+    my ($sec, $min, $hour) = (localtime)[0,1,2];
+
+    if ($hour != $last_rain_hour) {
+        $rain_minute = int(rand(51));          # 0..50
+        $last_rain_hour = $hour;
+        $rain_scheduled = 1;
+        $rain_active = 0;
+    }
+
+    if ($rain_scheduled && !$rain_active && $min == $rain_minute) {
+        $rain_active = 1;
+        $rain_scheduled = 0;
+        my $duration = 120 + int(rand(301));   # 120..420 секунд (2..7 минут)
+        $rain_start_time = time();
+        $rain_end_time = $rain_start_time + $duration;
+    }
+
+    if ($rain_active && time() >= $rain_end_time) {
+        $rain_active = 0;
+        $rain->clear();
+    }
+
     $menu->handle_input(\%move_flags);
     $menu->update();
 	
@@ -403,7 +434,10 @@ while ($running) {
     my $cam_y = $camera->y;
 
     $player->set_camera_offset(-$cam_x, -$cam_y);
-	$rain->update($TILE_SIZE, $map_cols * $TILE_SIZE, $map_rows * $TILE_SIZE, $cam_x, $cam_y);
+	
+	if ($rain_active) {
+    $rain->update($TILE_SIZE, $map_cols * $TILE_SIZE, $map_rows * $TILE_SIZE, $cam_x, $cam_y);
+    }
 
     # --- Рендер ---
     SDL_SetRenderDrawColor($renderer, 0,0,0,255);
@@ -461,10 +495,14 @@ while ($running) {
     }
 
     $player->draw();
-    SDL_SetRenderDrawBlendMode($renderer, 1);
-    SDL_SetRenderDrawColor($renderer, 200, 230, 255, 255);
-    $rain->draw($renderer, $cam_x, $cam_y, $draw_line);
-    SDL_SetRenderDrawBlendMode($renderer, 0);
+	
+    if ($rain_active) {
+        SDL_SetRenderDrawBlendMode($renderer, 1);
+        SDL_SetRenderDrawColor($renderer, 200, 230, 255, 255);
+        $rain->draw($renderer, $cam_x, $cam_y, $draw_line);
+        SDL_SetRenderDrawBlendMode($renderer, 0);
+    }
+	
 	$menu->draw();              # <-- рисовать меню поверх всего
 
     SDL_RenderPresent($renderer);

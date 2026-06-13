@@ -233,8 +233,10 @@ my $camera = Camera->new(
     map_height  => $map_rows * $TILE_SIZE,
     view_width  => $WIN_W,
     view_height => $WIN_H,
-    speed       => 4,          # обычная скорость
-    fast_speed  => 6,          # ускорение после 6 кадров скролла
+    margin_x    => 0,
+    margin_y    => $MAP_Y,          # верхний отступ для рамки (18)
+    speed       => 4,
+    fast_speed  => 6,
     speedup_threshold => 6,
 );
 
@@ -557,7 +559,7 @@ while ($running) {
         for my $row ($start_row .. $end_row) {
             for my $col ($start_col .. $end_col) {
                 my $dx = ($col * $TILE_SIZE) - $cam_x;
-                my $dy = ($row * $TILE_SIZE) - $cam_y;
+				my $dy = ($row * $TILE_SIZE) - $cam_y;
                 my $dst_alpha = pack('iiii', $dx, $dy, $TILE_SIZE, $TILE_SIZE);
                 my $dst_tmp   = malloc(16);
                 memcpy($dst_tmp, $ffi->cast('string' => 'opaque', $dst_alpha), 16);
@@ -584,9 +586,8 @@ while ($running) {
             my ($sx, $sy) = tile_src($id);
             my $src_pack = pack('iiii', $sx, $sy, $TILE_SIZE, $TILE_SIZE);
             memcpy($src_rect, $ffi->cast('string' => 'opaque', $src_pack), 16);
-
-            my $dx = ($col * $TILE_SIZE) - $cam_x;
-            my $dy = ($row * $TILE_SIZE) - $cam_y;
+			my $dx = ($col * $TILE_SIZE) - $cam_x;
+			my $dy = ($row * $TILE_SIZE) - $cam_y;
             my $dst_pack = pack('iiii', $dx, $dy, $TILE_SIZE, $TILE_SIZE);
             memcpy($dst_rect, $ffi->cast('string' => 'opaque', $dst_pack), 16);
 
@@ -594,7 +595,6 @@ while ($running) {
         }
     }
 
-    $player->draw();
 	
     if ($rain_active) {
         SDL_SetRenderDrawBlendMode($renderer, 1);
@@ -604,6 +604,22 @@ while ($running) {
     }
 	
 	$menu->draw();              # <-- рисовать меню поверх всего
+	
+	SDL_SetRenderDrawColor($renderer, 0, 0, 0, 255);
+
+    my $rect = pack('iiii', 0, 0, $WIN_W, $MAP_Y);
+    my $ptr = malloc(16);
+    memcpy($ptr, $ffi->cast('string'=>'opaque', $rect), 16);
+    SDL_RenderFillRect($renderer, $ptr);
+    free($ptr);
+
+    $rect = pack('iiii', 0, $WIN_H - 6, $WIN_W, 6);
+    $ptr = malloc(16);
+    memcpy($ptr, $ffi->cast('string'=>'opaque', $rect), 16);
+    SDL_RenderFillRect($renderer, $ptr);
+    free($ptr);
+	
+	$player->draw();
 
     SDL_RenderPresent($renderer);
     SDL_Delay(16);

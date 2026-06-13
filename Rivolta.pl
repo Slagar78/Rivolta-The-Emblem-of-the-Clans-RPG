@@ -13,6 +13,7 @@ use Menu;
 use Camera;
 use Rain;
 use Intro;
+use TextRenderer;
 
 my $ffi = FFI::Platypus->new(api => 2);
 $ffi->lib('SDL2');
@@ -149,6 +150,7 @@ for my $i (0..25) {
     $letter_tex{$char} = $tex;
 }
 
+
 # --- Функция отрисовки спрайта ---
 my $draw_sprite = sub {
     my ($tex, $x, $y, $src_x, $src_y, $w, $h) = @_;
@@ -159,6 +161,15 @@ my $draw_sprite = sub {
     SDL_RenderCopy($renderer, $tex, $src_rect, $dst_rect);
     free($src_rect); free($dst_rect);
 };
+
+my $text_renderer = TextRenderer->new(
+    letter_tex   => \%letter_tex,
+    draw_cb      => $draw_sprite,
+    letter_w     => $LETTER_W,
+    letter_h     => $LETTER_H,
+    spacing      => 1,
+    alpha_mod_cb => sub { SDL_SetTextureAlphaMod(@_) },
+);
 
 # --- Карта ---
 my $map_path = 'assets/map/map01.txt';
@@ -359,18 +370,24 @@ my $intro = Intro->new(
 
 
 while (!$intro->update()) {
+	
     # Обработка событий (только нажатия A или D)
     while (SDL_PollEvent($event_ptr)) {
         my $event_str = "\0" x 56;
         memcpy($ffi->cast('string' => 'opaque', $event_str), $event_ptr, 56);
         my $type = unpack('V', substr($event_str, 0, 4));
-        if ($type == 0x300) {   # SDL_KEYDOWN
+        if ($type == 0x100) {   # SDL_QUIT (крестик)
+            $running = 0;
+            last;               # выход из интро-цикла
+        }
+        elsif ($type == 0x300) {   # SDL_KEYDOWN
             my $scancode = unpack('V', substr($event_str, 16, 4));
-            if ($scancode == 0x04 || $scancode == 0x07) {   # A или D
+            if ($scancode == 0x04 || $scancode == 0x07) {
                 $intro->start_fade_out();
             }
         }
     }
+    last unless $running;   # если закрыли окно, сразу выходим из интро
 
     # Чёрный фон всегда
     SDL_SetRenderDrawColor($renderer, 0, 0, 0, 255);
@@ -379,15 +396,39 @@ while (!$intro->update()) {
     my $state = $intro->state;
 
     if ($state eq 'FLASH') {
-        # Белая вспышка
-        SDL_SetRenderDrawColor($renderer, 255, 255, 255, 255);
-        my $rect_pack = pack('iiii', 0, 0, $intro->win_w, $intro->win_h);
+        # Яркий ореол вокруг логотипа
+        my $half_w = $intro->logo_w / 2;
+        my $half_h = $intro->logo_h / 2;
+        my $glow_margin = 40;   # насколько ореол больше логотипа
+        my $glow_x = ($intro->win_w - $half_w) / 2 - $glow_margin;
+        my $glow_y = ($intro->win_h - $half_h) / 2 - $glow_margin;
+        my $glow_w = $half_w + $glow_margin * 2;
+        my $glow_h = $half_h + $glow_margin * 2;
+
+        SDL_SetRenderDrawBlendMode($renderer, 1);
+        SDL_SetRenderDrawColor($renderer, 255, 255, 255, 180);   # белый полупрозрачный
+        my $rect_pack = pack('iiii', $glow_x, $glow_y, $glow_w, $glow_h);
         my $rect_ptr = malloc(16);
         memcpy($rect_ptr, $ffi->cast('string'=>'opaque', $rect_pack), 16);
         SDL_RenderFillRect($renderer, $rect_ptr);
         free($rect_ptr);
+        SDL_SetRenderDrawBlendMode($renderer, 0);
+
+        # Сам логотип поверх ореола (яркий, без прозрачности)
+        my $dx = ($intro->win_w - $half_w) / 2;
+        my $dy = ($intro->win_h - $half_h) / 2;
+        my $src_pack = pack('iiii', 0, 0, $intro->logo_w, $intro->logo_h);
+        my $dst_pack = pack('iiii', $dx, $dy, $half_w, $half_h);
+        my $src_rect = malloc(16);
+        my $dst_rect = malloc(16);
+        memcpy($src_rect, $ffi->cast('string'=>'opaque', $src_pack), 16);
+        memcpy($dst_rect, $ffi->cast('string'=>'opaque', $dst_pack), 16);
+        SDL_RenderCopy($renderer, $intro->logo_tex, $src_rect, $dst_rect);
+        free($src_rect);
+        free($dst_rect);
     }
-    elsif ($state ne 'BLACK_WAIT' && $state ne 'DONE') {
+
+    elsif ($state ne 'BLACK_WAIT' && $state ne 'DONE' && $state ne 'FLASH') {
         if ($state ne 'FLICKER' || $intro->flicker_visible) {
             # Рисуем логотип (уменьшенный)
             my $half_w = $intro->logo_w / 2;
@@ -414,28 +455,11 @@ while (!$intro->update()) {
             free($dst_rect);
         }
 
-        # Рисуем "Press Start" буквами, если нужно
         if ($state eq 'WAIT_START' && $intro->show_press_start) {
-            my $text = "Press Start";
-            my $spacing = 1;
-            my $total_w = length($text) * ($LETTER_W + $spacing) - $spacing;
-            my $start_x = ($intro->win_w - $total_w) / 2;
             my $logo_bottom = ($intro->win_h + $intro->logo_h/2) / 2;
             my $text_y = $logo_bottom + 20;
-
-            for my $i (0..length($text)-1) {
-                my $ch = substr($text, $i, 1);
-                next unless exists $letter_tex{$ch};
-                my $tex = $letter_tex{$ch};
-                my $x = $start_x + $i * ($LETTER_W + $spacing);
-                if ($state eq 'FADE_OUT') {
-                    SDL_SetTextureAlphaMod($tex, $intro->fade_alpha);
-                }
-                $draw_sprite->($tex, $x, $text_y, 0, 0, $LETTER_W, $LETTER_H);
-                if ($state eq 'FADE_OUT') {
-                    SDL_SetTextureAlphaMod($tex, 255);
-                }
-            }
+            my $alpha = ($state eq 'FADE_OUT') ? $intro->fade_alpha : undef;
+            $text_renderer->draw_centered("Press Start", $intro->win_w / 2, $text_y, $alpha);
         }
     }
 

@@ -10,6 +10,7 @@ use FFI::Platypus;
 use FFI::Platypus::Memory qw(malloc free memcpy);
 use Player;
 use Menu;
+use Camera;
 
 my $ffi = FFI::Platypus->new(api => 2);
 $ffi->lib('SDL2');
@@ -210,6 +211,16 @@ my $player = Player->new(
 	tile_size    => $TILE_SIZE,
 );
 
+my $camera = Camera->new(
+    map_width   => $map_cols * $TILE_SIZE,
+    map_height  => $map_rows * $TILE_SIZE,
+    view_width  => $WIN_W,
+    view_height => $WIN_H,
+    speed       => 4,          # обычная скорость
+    fast_speed  => 6,          # ускорение после 6 кадров скролла
+    speedup_threshold => 6,
+);
+
 # --- Меню 4 кнопки ---
 my @button_textures;
 for my $i (1..4) {
@@ -360,11 +371,33 @@ while ($running) {
 
     $menu->handle_input(\%move_flags);
     $menu->update();
+	
     if ($menu->{visible}) {
         $player->update({ up => 0, down => 0, left => 0, right => 0 });
     } else {
         $player->update(\%move_flags);
     }
+
+
+    # Центр игрока в мировых координатах
+    my $px = $player->{tile_x} * $TILE_SIZE + $TILE_SIZE/2;
+    my $py = $player->{tile_y} * $TILE_SIZE + $TILE_SIZE/2;
+    if (defined $player->{target_tile_x}) {
+        if    ($player->{direction} eq 'right') { $px += $player->{pixel_offset}; }
+        elsif ($player->{direction} eq 'left')  { $px -= $player->{pixel_offset}; }
+        elsif ($player->{direction} eq 'down')  { $py += $player->{pixel_offset}; }
+        elsif ($player->{direction} eq 'up')    { $py -= $player->{pixel_offset}; }
+    }
+
+    # Проверяем, выходит ли игрок за мёртвую зону
+    if ($camera->_out_of_dead_zone($px, $py)) {
+        $camera->set_target($px, $py);
+    }
+    $camera->update();
+    my $cam_x = $camera->x;
+    my $cam_y = $camera->y;
+
+    $player->set_camera_offset(-$cam_x, -$cam_y);
 
     # --- Рендер ---
     SDL_SetRenderDrawColor($renderer, 0,0,0,255);
@@ -375,10 +408,16 @@ while ($running) {
         my $src_alpha = pack('iiii', 0, 0, $TILE_SIZE, $TILE_SIZE);
         my $src_tmp   = malloc(16);
         memcpy($src_tmp, $ffi->cast('string' => 'opaque', $src_alpha), 16);
-        for my $row (0 .. $ROWS - 1) {
-            for my $col (0 .. $COLS - 1) {
-                my $dx = $MAP_X + $col * $TILE_SIZE;
-                my $dy = $MAP_Y + $row * $TILE_SIZE;
+
+        my $start_col = int($cam_x / $TILE_SIZE);
+        my $end_col   = int(($cam_x + $WIN_W) / $TILE_SIZE);
+        my $start_row = int($cam_y / $TILE_SIZE);
+        my $end_row   = int(($cam_y + $WIN_H) / $TILE_SIZE);
+
+        for my $row ($start_row .. $end_row) {
+            for my $col ($start_col .. $end_col) {
+                my $dx = ($col * $TILE_SIZE) - $cam_x;
+                my $dy = ($row * $TILE_SIZE) - $cam_y;
                 my $dst_alpha = pack('iiii', $dx, $dy, $TILE_SIZE, $TILE_SIZE);
                 my $dst_tmp   = malloc(16);
                 memcpy($dst_tmp, $ffi->cast('string' => 'opaque', $dst_alpha), 16);
@@ -390,10 +429,15 @@ while ($running) {
     }
 
     # Карта
-    for my $row (0 .. $ROWS - 1) {
-        last if $row >= $map_rows;
-        for my $col (0 .. $COLS - 1) {
-            last if $col >= $map_cols;
+    my $start_col = int($cam_x / $TILE_SIZE);
+    my $end_col   = int(($cam_x + $WIN_W) / $TILE_SIZE);
+    my $start_row = int($cam_y / $TILE_SIZE);
+    my $end_row   = int(($cam_y + $WIN_H) / $TILE_SIZE);
+
+    for my $row ($start_row .. $end_row) {
+        next if $row < 0 || $row >= $map_rows;
+        for my $col ($start_col .. $end_col) {
+            next if $col < 0 || $col >= $map_cols;
             my $id = $map[$row][$col];
             next if $id <= 0;
 
@@ -401,8 +445,8 @@ while ($running) {
             my $src_pack = pack('iiii', $sx, $sy, $TILE_SIZE, $TILE_SIZE);
             memcpy($src_rect, $ffi->cast('string' => 'opaque', $src_pack), 16);
 
-            my $dx = $MAP_X + $col * $TILE_SIZE;
-            my $dy = $MAP_Y + $row * $TILE_SIZE;
+            my $dx = ($col * $TILE_SIZE) - $cam_x;
+            my $dy = ($row * $TILE_SIZE) - $cam_y;
             my $dst_pack = pack('iiii', $dx, $dy, $TILE_SIZE, $TILE_SIZE);
             memcpy($dst_rect, $ffi->cast('string' => 'opaque', $dst_pack), 16);
 

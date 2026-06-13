@@ -183,4 +183,10 @@ sub draw {
     );
 }
 
+sub set_camera_offset {
+    my ($self, $ox, $oy) = @_;
+    $self->{map_offset_x} = $ox;
+    $self->{map_offset_y} = $oy;
+}
+
 1;

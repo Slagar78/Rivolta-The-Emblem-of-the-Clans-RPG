@@ -11,6 +11,7 @@ use FFI::Platypus::Memory qw(malloc free memcpy);
 use Player;
 use Menu;
 use Camera;
+use Rain;
 
 my $ffi = FFI::Platypus->new(api => 2);
 $ffi->lib('SDL2');
@@ -221,6 +222,8 @@ my $camera = Camera->new(
     speedup_threshold => 6,
 );
 
+my $rain = Rain->new( max_drops => 200, length => 26, speed => 9, angle => 25 );
+
 # --- Меню 4 кнопки ---
 my @button_textures;
 for my $i (1..4) {
@@ -283,6 +286,8 @@ my $draw_border = sub {
 my $reset_color = sub {
     SDL_SetRenderDrawColor($renderer, 255, 255, 255, 255);
 };
+
+my $draw_line = sub { SDL_RenderDrawLine($renderer, @_); };
 
 
 # --- Буквенные наборы для надписей меню ---
@@ -398,6 +403,7 @@ while ($running) {
     my $cam_y = $camera->y;
 
     $player->set_camera_offset(-$cam_x, -$cam_y);
+	$rain->update($TILE_SIZE, $map_cols * $TILE_SIZE, $map_rows * $TILE_SIZE, $cam_x, $cam_y);
 
     # --- Рендер ---
     SDL_SetRenderDrawColor($renderer, 0,0,0,255);
@@ -455,6 +461,10 @@ while ($running) {
     }
 
     $player->draw();
+    SDL_SetRenderDrawBlendMode($renderer, 1);
+    SDL_SetRenderDrawColor($renderer, 200, 230, 255, 255);
+    $rain->draw($renderer, $cam_x, $cam_y, $draw_line);
+    SDL_SetRenderDrawBlendMode($renderer, 0);
 	$menu->draw();              # <-- рисовать меню поверх всего
 
     SDL_RenderPresent($renderer);

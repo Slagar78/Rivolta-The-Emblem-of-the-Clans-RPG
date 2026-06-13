@@ -536,7 +536,7 @@ while ($running) {
     my $cam_y = $camera->y;
 
     $player->set_camera_offset(-$cam_x, -$cam_y);
-	
+			
 	if ($rain_active) {
     $rain->update($TILE_SIZE, $map_cols * $TILE_SIZE, $map_rows * $TILE_SIZE, $cam_x, $cam_y);
     }
@@ -595,17 +595,7 @@ while ($running) {
         }
     }
 
-	
-    if ($rain_active) {
-        SDL_SetRenderDrawBlendMode($renderer, 1);
-        SDL_SetRenderDrawColor($renderer, 200, 230, 255, 255);
-        $rain->draw($renderer, $cam_x, $cam_y, $draw_line);
-        SDL_SetRenderDrawBlendMode($renderer, 0);
-    }
-	
-	$menu->draw();              # <-- рисовать меню поверх всего
-	
-	SDL_SetRenderDrawColor($renderer, 0, 0, 0, 255);
+    SDL_SetRenderDrawColor($renderer, 0, 0, 0, 255);
 
     my $rect = pack('iiii', 0, 0, $WIN_W, $MAP_Y);
     my $ptr = malloc(16);
@@ -618,9 +608,17 @@ while ($running) {
     memcpy($ptr, $ffi->cast('string'=>'opaque', $rect), 16);
     SDL_RenderFillRect($renderer, $ptr);
     free($ptr);
-	
-	$player->draw();
 
+	$player->draw();
+    if ($rain_active) {
+        SDL_SetRenderDrawBlendMode($renderer, 1);
+        SDL_SetRenderDrawColor($renderer, 200, 230, 255, 255);
+        $rain->draw($renderer, $cam_x, $cam_y, $draw_line);
+        SDL_SetRenderDrawBlendMode($renderer, 0);
+    }
+	
+	$menu->draw();              # <-- рисовать меню поверх всего
+			
     SDL_RenderPresent($renderer);
     SDL_Delay(16);
 }

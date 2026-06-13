@@ -12,6 +12,7 @@ use Player;
 use Menu;
 use Camera;
 use Rain;
+use Intro;
 
 my $ffi = FFI::Platypus->new(api => 2);
 $ffi->lib('SDL2');
@@ -59,6 +60,10 @@ $ffi->attach( TTF_SizeUTF8 => ['opaque', 'string', 'opaque', 'opaque'] => 'int' 
 $ffi->attach( TTF_CloseFont        => ['opaque']                   => 'void' );
 $ffi->attach( TTF_Quit             => []                           => 'void' );
 
+$ffi->attach( SDL_GetTicks          => []                => 'uint32' );
+$ffi->attach( SDL_SetTextureAlphaMod => ['opaque','uint8'] => 'int' );
+$ffi->attach( SDL_RenderFillRect => ['opaque','opaque'] => 'int' );
+
 
 # Параметры окна и тайлов
 my $TILE_SIZE = 48;
@@ -103,6 +108,14 @@ my $sprite_surf = IMG_Load($sprite_path) or die "IMG_Load sprite: ".SDL_GetError
 my $sprite_tex  = SDL_CreateTextureFromSurface($renderer, $sprite_surf);
 SDL_FreeSurface($sprite_surf);
 SDL_SetTextureBlendMode($sprite_tex, 0x00000001);
+
+# --- Логотип для интро ---
+my $logo_path = 'assets/intro/logo.png';
+die "Logo not found: $logo_path" unless -f $logo_path;
+my $logo_surf = IMG_Load($logo_path) or die "IMG_Load logo: " . SDL_GetError();
+my $logo_tex = SDL_CreateTextureFromSurface($renderer, $logo_surf);
+SDL_FreeSurface($logo_surf);
+SDL_SetTextureBlendMode($logo_tex, 0x00000001);
 
 
 # Загрузка
@@ -175,14 +188,6 @@ if (@lines) {
 }
 # Остальная обработка @collision (если нужно) без изменений.
 
-# --- Запуск музыки ---
-if ($music_path && -f $music_path) {
-    my $music = Mix_LoadMUS($music_path);
-    if ($music) {
-        Mix_VolumeMusic(64);          # громкость 64 (0-128)
-        Mix_PlayMusic($music, -1);    # -1 = бесконечный цикл
-    }
-}
 
 sub tile_src {
     my ($id) = @_;
@@ -342,6 +347,110 @@ my $event_ptr = malloc(56);
 my $src_rect  = malloc(16);
 my $dst_rect  = malloc(16);
 my $running   = 1;
+
+
+# --- Запуск интро ---
+my $intro = Intro->new(
+    logo_tex  => $logo_tex,
+    get_ticks => sub { SDL_GetTicks() },
+    win_w     => $WIN_W,
+    win_h     => $WIN_H,
+);
+
+
+while (!$intro->update()) {
+    # Обработка событий (только нажатия A или D)
+    while (SDL_PollEvent($event_ptr)) {
+        my $event_str = "\0" x 56;
+        memcpy($ffi->cast('string' => 'opaque', $event_str), $event_ptr, 56);
+        my $type = unpack('V', substr($event_str, 0, 4));
+        if ($type == 0x300) {   # SDL_KEYDOWN
+            my $scancode = unpack('V', substr($event_str, 16, 4));
+            if ($scancode == 0x04 || $scancode == 0x07) {   # A или D
+                $intro->start_fade_out();
+            }
+        }
+    }
+
+    # Чёрный фон всегда
+    SDL_SetRenderDrawColor($renderer, 0, 0, 0, 255);
+    SDL_RenderClear($renderer);
+
+    my $state = $intro->state;
+
+    if ($state eq 'FLASH') {
+        # Белая вспышка
+        SDL_SetRenderDrawColor($renderer, 255, 255, 255, 255);
+        my $rect_pack = pack('iiii', 0, 0, $intro->win_w, $intro->win_h);
+        my $rect_ptr = malloc(16);
+        memcpy($rect_ptr, $ffi->cast('string'=>'opaque', $rect_pack), 16);
+        SDL_RenderFillRect($renderer, $rect_ptr);
+        free($rect_ptr);
+    }
+    elsif ($state ne 'BLACK_WAIT' && $state ne 'DONE') {
+        if ($state ne 'FLICKER' || $intro->flicker_visible) {
+            # Рисуем логотип (уменьшенный)
+            my $half_w = $intro->logo_w / 2;
+            my $half_h = $intro->logo_h / 2;
+            my $dx = ($intro->win_w - $half_w) / 2;
+            my $dy = ($intro->win_h - $half_h) / 2;
+
+            my $src_pack = pack('iiii', 0, 0, $intro->logo_w, $intro->logo_h);
+            my $dst_pack = pack('iiii', $dx, $dy, $half_w, $half_h);
+
+            my $src_rect = malloc(16);
+            memcpy($src_rect, $ffi->cast('string'=>'opaque', $src_pack), 16);
+            my $dst_rect = malloc(16);
+            memcpy($dst_rect, $ffi->cast('string'=>'opaque', $dst_pack), 16);
+
+            if ($state eq 'FADE_OUT') {
+                SDL_SetTextureAlphaMod($intro->logo_tex, $intro->fade_alpha);
+            }
+            SDL_RenderCopy($renderer, $intro->logo_tex, $src_rect, $dst_rect);
+            if ($state eq 'FADE_OUT') {
+                SDL_SetTextureAlphaMod($intro->logo_tex, 255);
+            }
+            free($src_rect);
+            free($dst_rect);
+        }
+
+        # Рисуем "Press Start" буквами, если нужно
+        if ($state eq 'WAIT_START' && $intro->show_press_start) {
+            my $text = "Press Start";
+            my $spacing = 1;
+            my $total_w = length($text) * ($LETTER_W + $spacing) - $spacing;
+            my $start_x = ($intro->win_w - $total_w) / 2;
+            my $logo_bottom = ($intro->win_h + $intro->logo_h/2) / 2;
+            my $text_y = $logo_bottom + 20;
+
+            for my $i (0..length($text)-1) {
+                my $ch = substr($text, $i, 1);
+                next unless exists $letter_tex{$ch};
+                my $tex = $letter_tex{$ch};
+                my $x = $start_x + $i * ($LETTER_W + $spacing);
+                if ($state eq 'FADE_OUT') {
+                    SDL_SetTextureAlphaMod($tex, $intro->fade_alpha);
+                }
+                $draw_sprite->($tex, $x, $text_y, 0, 0, $LETTER_W, $LETTER_H);
+                if ($state eq 'FADE_OUT') {
+                    SDL_SetTextureAlphaMod($tex, 255);
+                }
+            }
+        }
+    }
+
+    SDL_RenderPresent($renderer);
+    SDL_Delay(16);
+}
+
+# --- Запуск музыки ---
+if ($music_path && -f $music_path) {
+    my $music = Mix_LoadMUS($music_path);
+    if ($music) {
+        Mix_VolumeMusic(64);          # громкость 64 (0-128)
+        Mix_PlayMusic($music, -1);    # -1 = бесконечный цикл
+    }
+}
 
 while ($running) {
     # --- Обработка событий ---

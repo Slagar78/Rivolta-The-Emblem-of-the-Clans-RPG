@@ -1,0 +1,1 @@
+pp --gui -o Rivolta.exe Rivolta.pl

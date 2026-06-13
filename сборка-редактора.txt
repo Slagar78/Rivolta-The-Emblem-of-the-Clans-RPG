@@ -1,0 +1,14 @@
+
+pp -o TileEditor.exe ^
+   -I TileEditor ^
+   -a "assets;assets" ^
+   -a "SDL2.dll;SDL2.dll" ^
+   -a "SDL2_image.dll;SDL2_image.dll" ^
+   -a "SDL2_ttf.dll;SDL2_ttf.dll" ^
+   -a "libpng16-16__.dll;libpng16-16__.dll" ^
+   -a "libjpeg-9__.dll;libjpeg-9__.dll" ^
+   -a "zlib1.dll;zlib1.dll" ^
+   -a "libfreetype-6__.dll;libfreetype-6__.dll" ^
+   TileEditor/tile_editor.pl
+
+корень 

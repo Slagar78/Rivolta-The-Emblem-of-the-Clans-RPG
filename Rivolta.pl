@@ -1,0 +1,476 @@
+#!/usr/bin/perl
+use strict;
+use warnings;
+use Config;
+use FindBin;
+use lib $FindBin::Bin;
+use lib "$FindBin::Bin/lib";
+
+use FFI::Platypus;
+use FFI::Platypus::Memory qw(malloc free memcpy);
+use Player;
+use Menu;
+
+my $ffi = FFI::Platypus->new(api => 2);
+$ffi->lib('SDL2');
+$ffi->lib('SDL2_image');
+$ffi->lib('SDL2_mixer');
+$ffi->lib('SDL2_ttf');
+
+$ffi->attach( SDL_Init               => ['uint'] => 'int' );
+$ffi->attach( SDL_GetError           => []       => 'string' );
+$ffi->attach( SDL_CreateWindow       => ['string','int','int','int','int','uint'] => 'opaque' );
+$ffi->attach( SDL_CreateRenderer     => ['opaque','int','uint'] => 'opaque' );
+$ffi->attach( SDL_DestroyRenderer    => ['opaque'] => 'void' );
+$ffi->attach( SDL_DestroyWindow      => ['opaque'] => 'void' );
+$ffi->attach( SDL_Quit               => [] => 'void' );
+$ffi->attach( SDL_SetRenderDrawColor => ['opaque','uint8','uint8','uint8','uint8'] => 'int' );
+$ffi->attach( SDL_RenderClear        => ['opaque'] => 'int' );
+$ffi->attach( SDL_RenderCopyEx => ['opaque','opaque','opaque','opaque','double','opaque','int'] => 'int' );
+$ffi->attach( SDL_RenderDrawLine => ['opaque','int','int','int','int'] => 'int' );
+$ffi->attach( SDL_RenderCopy         => ['opaque','opaque','opaque','opaque'] => 'int' );
+$ffi->attach( SDL_RenderPresent      => ['opaque'] => 'void' );
+$ffi->attach( SDL_PollEvent          => ['opaque'] => 'int' );
+$ffi->attach( SDL_Delay              => ['uint'] => 'void' );
+$ffi->attach( SDL_FreeSurface        => ['opaque'] => 'void' );
+$ffi->attach( SDL_CreateTextureFromSurface => ['opaque','opaque'] => 'opaque' );
+$ffi->attach( SDL_DestroyTexture     => ['opaque'] => 'void' );
+$ffi->attach( SDL_SetTextureBlendMode => ['opaque','int'] => 'int' );
+$ffi->attach( SDL_SetRenderDrawBlendMode => ['opaque','int'] => 'int' );
+$ffi->attach( SDL_SetTextureColorMod => ['opaque','uint8','uint8','uint8'] => 'int' );
+$ffi->attach( IMG_Load               => ['string'] => 'opaque' );
+$ffi->attach( IMG_Init               => ['int']    => 'int' );
+$ffi->attach( SDL_GetKeyboardState   => ['opaque'] => 'opaque' );   # не понадобится, но оставим
+
+$ffi->attach( Mix_OpenAudio  => ['int','uint16','int','int'] => 'int' );
+$ffi->attach( Mix_LoadMUS    => ['string']                   => 'opaque' );
+$ffi->attach( Mix_PlayMusic  => ['opaque','int']             => 'int' );
+$ffi->attach( Mix_VolumeMusic => ['int']                      => 'int' );
+$ffi->attach( Mix_FreeMusic  => ['opaque']                   => 'void' );
+$ffi->attach( Mix_CloseAudio => []                           => 'void' );
+
+$ffi->attach( TTF_Init             => []                           => 'int' );
+$ffi->attach( TTF_OpenFont         => ['string', 'int']            => 'opaque' );
+$ffi->attach( TTF_RenderUTF8_Solid => ['opaque', 'string', 'opaque'] => 'opaque' );
+$ffi->attach( TTF_RenderUTF8_Blended => ['opaque', 'string', 'opaque'] => 'opaque' );
+$ffi->attach( TTF_SizeUTF8 => ['opaque', 'string', 'opaque', 'opaque'] => 'int' );
+$ffi->attach( TTF_CloseFont        => ['opaque']                   => 'void' );
+$ffi->attach( TTF_Quit             => []                           => 'void' );
+
+$ffi->attach( SDL_LockSurface   => ['opaque'] => 'int' );
+$ffi->attach( SDL_UnlockSurface => ['opaque'] => 'void' );
+
+# Параметры окна и тайлов
+my $TILE_SIZE = 48;
+my $WIN_W = 800; my $WIN_H = 600;
+my $COLS = 16; my $ROWS = 12;
+my $MAP_W = $COLS * $TILE_SIZE;   # 768
+my $MAP_H = $ROWS * $TILE_SIZE;   # 576
+my $MAP_X = ($WIN_W - $MAP_W) / 2; # 16
+my $MAP_Y = 18;
+
+die "SDL_Init: " . SDL_GetError() if SDL_Init(0x00000020) != 0;
+die "IMG_Init: " . SDL_GetError() unless IMG_Init(2) & 2;
+die "Mix_OpenAudio: " . SDL_GetError() if Mix_OpenAudio(44100, 0x8010, 2, 2048) != 0;
+
+# Создаём окно и рендерер ДО шрифта
+my $window   = SDL_CreateWindow("Rivolta: The Emblem of the Clans", 100, 100, $WIN_W, $WIN_H, 0x00000004);
+my $renderer = SDL_CreateRenderer($window, -1, 0x0000000A);
+die "Renderer: " . SDL_GetError() unless $renderer;
+
+
+# --- Тайлсет (основной) ---
+my $tileset_path = 'assets/tileset/tileset.png';
+die "Tileset not found" unless -f $tileset_path;
+my $tileset_surf = IMG_Load($tileset_path) or die "IMG_Load tileset: ".SDL_GetError();
+my $tileset_tex  = SDL_CreateTextureFromSurface($renderer, $tileset_surf);
+SDL_FreeSurface($tileset_surf);
+SDL_SetTextureBlendMode($tileset_tex, 0x00000001);
+
+# --- Одиночный тайл-заполнитель (шахматный узор) ---
+my $alpha_path = 'assets/tileset/alpha.png';
+my $alpha_tex  = undef;
+if (-f $alpha_path) {
+    my $alpha_surf = IMG_Load($alpha_path) or die "IMG_Load alpha: ".SDL_GetError();
+    $alpha_tex     = SDL_CreateTextureFromSurface($renderer, $alpha_surf);
+    SDL_FreeSurface($alpha_surf);
+}
+
+# --- Спрайт персонажа ---
+my $sprite_path = 'assets/mapsprites/Bryan.png';
+die "Sprite not found" unless -f $sprite_path;
+my $sprite_surf = IMG_Load($sprite_path) or die "IMG_Load sprite: ".SDL_GetError();
+my $sprite_tex  = SDL_CreateTextureFromSurface($renderer, $sprite_surf);
+SDL_FreeSurface($sprite_surf);
+SDL_SetTextureBlendMode($sprite_tex, 0x00000001);
+
+# --- Загрузка нужных символов из PNG (чёрные буквы превращаются в белые) ---
+
+# Функция замены чёрного (0,0,0,255) на белый (255,255,255,255) в поверхности RGBA
+sub surface_black_to_white {
+    my ($surf) = @_;
+    SDL_LockSurface($surf);
+
+    my $ptrsize = $Config{ptrsize};
+    my ($off_w, $off_h, $off_pitch, $off_pixels);
+    if ($ptrsize == 8) {
+        $off_w = 16; $off_h = 20; $off_pitch = 24; $off_pixels = 32;
+    } else {
+        $off_w = 8; $off_h = 12; $off_pitch = 16; $off_pixels = 20;
+    }
+
+    my $surf_addr = $ffi->cast('uint64' => 'opaque', $surf);
+    my $buf8 = "\0" x 8;
+
+    memcpy($ffi->cast('string' => 'opaque', $buf8), $ffi->cast('opaque' => 'uint64', $surf_addr + $off_w), 4);
+    my $w = unpack('i', substr($buf8, 0, 4));
+    memcpy($ffi->cast('string' => 'opaque', $buf8), $ffi->cast('opaque' => 'uint64', $surf_addr + $off_h), 4);
+    my $h = unpack('i', substr($buf8, 0, 4));
+    memcpy($ffi->cast('string' => 'opaque', $buf8), $ffi->cast('opaque' => 'uint64', $surf_addr + $off_pitch), 4);
+    my $pitch = unpack('i', substr($buf8, 0, 4));
+    memcpy($ffi->cast('string' => 'opaque', $buf8), $ffi->cast('opaque' => 'uint64', $surf_addr + $off_pixels), $ptrsize);
+    my $pixels_ptr = unpack(($ptrsize == 8 ? 'Q' : 'L'), $buf8);
+
+    my $buf_size = $pitch * $h;
+    my $pix_buf = "\0" x $buf_size;
+    memcpy($ffi->cast('string' => 'opaque', $pix_buf), $pixels_ptr, $buf_size);
+
+    my @pixels = unpack('V*', $pix_buf);
+    my @new;
+    my $black = 0xFF000000;
+    my $white = 0xFFFFFFFF;
+    for my $p (@pixels) {
+        push @new, ($p == $black) ? $white : $p;
+    }
+    my $new_buf = pack('V*', @new);
+    memcpy($pixels_ptr, $ffi->cast('string' => 'opaque', $new_buf), $buf_size);
+
+    SDL_UnlockSurface($surf);
+}
+
+# Загрузка
+my %letter_tex;
+my $LETTER_W = 12;
+my $LETTER_H = 16;
+
+# Заглавные A–Z (012–037)
+for my $i (0..25) {
+    my $num  = 12 + $i;
+    my $char = chr(65 + $i);
+    my $path = sprintf('assets/fonts/white/symbol%03d.png', $num);
+    next unless -f $path;
+    my $surf = IMG_Load($path) or die "IMG_Load $path: " . SDL_GetError();
+    surface_black_to_white($surf);
+    my $tex = SDL_CreateTextureFromSurface($renderer, $surf);
+    SDL_FreeSurface($surf);
+    SDL_SetTextureBlendMode($tex, 0x00000001);
+    $letter_tex{$char} = $tex;
+}
+
+# Строчные a–z (038–063)
+for my $i (0..25) {
+    my $num  = 38 + $i;
+    my $char = chr(97 + $i);
+    my $path = sprintf('assets/fonts/white/symbol%03d.png', $num);
+    next unless -f $path;
+    my $surf = IMG_Load($path) or die "IMG_Load $path: " . SDL_GetError();
+    surface_black_to_white($surf);
+    my $tex = SDL_CreateTextureFromSurface($renderer, $surf);
+    SDL_FreeSurface($surf);
+    SDL_SetTextureBlendMode($tex, 0x00000001);
+    $letter_tex{$char} = $tex;
+}
+
+# --- Функция отрисовки спрайта ---
+my $draw_sprite = sub {
+    my ($tex, $x, $y, $src_x, $src_y, $w, $h) = @_;
+    my $src_pack = pack('iiii', $src_x, $src_y, $w, $h);
+    my $dst_pack = pack('iiii', $x, $y, $w, $h);
+    my $src_rect = malloc(16); memcpy($src_rect, $ffi->cast('string'=>'opaque', $src_pack), 16);
+    my $dst_rect = malloc(16); memcpy($dst_rect, $ffi->cast('string'=>'opaque', $dst_pack), 16);
+    SDL_RenderCopy($renderer, $tex, $src_rect, $dst_rect);
+    free($src_rect); free($dst_rect);
+};
+
+# --- Карта ---
+my $map_path = 'assets/map/map01.txt';
+die "Map file missing" unless -f $map_path;
+my @map; my @collision; my $map_cols=0; my $map_rows=0;
+my $music_path = undef;
+open(my $fh, '<', $map_path) or die $!;
+my @lines; my $in_coll=0;
+while (<$fh>) {
+    chomp; s/^\s+//; s/\s+$//;
+    if (/^#music\s+(.+)/i) {
+        $music_path = $1;
+        next;
+    }
+    if (/^#collision/i) { $in_coll=1; next; }
+    next if $_ eq '' && !$in_coll;
+    if (!$in_coll) { push @lines, [split /\s+/, $_]; }
+    else           { push @collision, [split /\s+/, $_]; }
+}
+close $fh;
+
+if (@lines) {
+    $map_rows = @lines;
+    for my $r (@lines) { my $c=scalar @$r; $map_cols=$c if $c>$map_cols; }
+    @map = ();
+    for my $r (@lines) { push @map, [@{$r}, (0) x ($map_cols - @{$r})]; }
+}
+# Остальная обработка @collision (если нужно) без изменений.
+
+# --- Запуск музыки ---
+if ($music_path && -f $music_path) {
+    my $music = Mix_LoadMUS($music_path);
+    if ($music) {
+        Mix_VolumeMusic(64);          # громкость 64 (0-128)
+        Mix_PlayMusic($music, -1);    # -1 = бесконечный цикл
+    }
+}
+
+sub tile_src {
+    my ($id) = @_;
+    return (0,0) if $id <= 0;
+    my $tp = 16; my $sw = $tp * $TILE_SIZE; my $th = 64;
+    my $strip = int($id / ($tp * $th));
+    my $local = $id % ($tp * $th);
+    my $col = $local % $tp;
+    my $row = int($local / $tp);
+    my $sx = $strip * $sw + $col * $TILE_SIZE;
+    my $sy = $row * $TILE_SIZE;
+    return (0,0) if $sx>=3072 || $sy>=3072;
+    return ($sx, $sy);
+}
+
+# --- Персонаж ---
+my $player = Player->new(
+    draw_cb      => $draw_sprite,
+    texture      => $sprite_tex,
+    x            => 2 * $TILE_SIZE,   # без MAP_X
+    y            => 9 * $TILE_SIZE,   # без MAP_Y
+    direction    => 'down',
+    map_cols     => $map_cols,
+    map_rows     => $map_rows,
+    map_offset_x => $MAP_X,
+    map_offset_y => $MAP_Y,
+	tile_size    => $TILE_SIZE,
+);
+
+# --- Меню 4 кнопки ---
+my @button_textures;
+for my $i (1..4) {
+    my $path = "assets/buttons/button_$i.png";
+    die "Button $i not found: $path" unless -f $path;
+    my $surf = IMG_Load($path) or die "IMG_Load button $i: " . SDL_GetError();
+    my $tex  = SDL_CreateTextureFromSurface($renderer, $surf);
+    SDL_FreeSurface($surf);
+    SDL_SetTextureBlendMode($tex, 0x00000001);   # прозрачность
+    push @button_textures, $tex;
+}
+
+# --- Панель с названиями (Label_panel.png) ---
+my $label_panel_tex = undef;
+my $label_path = 'assets/buttons/Label_panel.png';
+if (-f $label_path) {
+    my $surf = IMG_Load($label_path) or die "IMG_Load label_panel: " . SDL_GetError();
+    $label_panel_tex = SDL_CreateTextureFromSurface($renderer, $surf);
+    SDL_FreeSurface($surf);
+    SDL_SetTextureBlendMode($label_panel_tex, 0x00000001);
+}
+
+my $draw_sprite_flip = sub {
+    my ($tex, $x, $y, $src_x, $src_y, $w, $h, $scale_x, $flip) = @_;
+    my $src_pack = pack('iiii', $src_x, $src_y, $w, $h);
+    # ширина меняется, высота постоянна
+    my $dst_w = $w * $scale_x;
+    my $dst_h = $h;
+    # центрируем по горизонтали
+    my $dst_x = $x + ($w - $dst_w)/2;
+    my $dst_y = $y;
+    my $dst_pack = pack('iiii', $dst_x, $dst_y, $dst_w, $dst_h);
+    my $src_rect = malloc(16); memcpy($src_rect, $ffi->cast('string'=>'opaque', $src_pack), 16);
+    my $dst_rect = malloc(16); memcpy($dst_rect, $ffi->cast('string'=>'opaque', $dst_pack), 16);
+    my $center = pack('ii', 0, 0);   # центр не важен при флипе
+    SDL_RenderCopyEx($renderer, $tex, $src_rect, $dst_rect, 0, $ffi->cast('string'=>'opaque', $center), $flip ? 1 : 0);
+    free($src_rect); free($dst_rect);
+};
+
+# ---
+my $draw_border = sub {
+    my ($x1, $y1, $x2, $y2, $x3, $y3, $x4, $y4) = @_;
+    SDL_SetRenderDrawBlendMode($renderer, 1);
+    SDL_SetRenderDrawColor($renderer, 255, 105, 180, 220);   # розовый, почти непрозрачный
+
+    # Рисуем 4 ромба со смещением для толщины 2 пикселя
+    for my $dx (0, 1) {
+        for my $dy (0, 1) {
+            SDL_RenderDrawLine($renderer, $x1+$dx, $y1+$dy, $x2+$dx, $y2+$dy);
+            SDL_RenderDrawLine($renderer, $x2+$dx, $y2+$dy, $x3+$dx, $y3+$dy);
+            SDL_RenderDrawLine($renderer, $x3+$dx, $y3+$dy, $x4+$dx, $y4+$dy);
+            SDL_RenderDrawLine($renderer, $x4+$dx, $y4+$dy, $x1+$dx, $y1+$dy);
+        }
+    }
+
+    SDL_SetRenderDrawBlendMode($renderer, 0);
+	SDL_SetRenderDrawColor($renderer, 255, 255, 255, 255);
+};
+
+my $reset_color = sub {
+    SDL_SetRenderDrawColor($renderer, 255, 255, 255, 255);
+};
+
+
+# --- Буквенные наборы для надписей меню ---
+my @menu_label_strings = ("Stato", "Magia", "Oggetti", "Cerca");
+my @menu_label_letters;
+
+for my $word (@menu_label_strings) {
+    my @word_tex;
+    for my $ch (split //, $word) {
+        if (exists $letter_tex{$ch}) {
+            push @word_tex, $letter_tex{$ch};
+        } else {
+            warn "Нет текстуры для буквы '$ch'";
+            push @word_tex, undef;
+        }
+    }
+    push @menu_label_letters, \@word_tex;
+}
+
+# --- Создание меню ---
+my $menu = Menu->new(
+    renderer            => $renderer,
+    draw_cb             => $draw_sprite,
+    draw_cb_flip        => $draw_sprite_flip,
+    draw_border         => $draw_border,
+    reset_color         => $reset_color,
+	set_texture_color_mod => sub { SDL_SetTextureColorMod(@_) },
+    label_panel_tex     => $label_panel_tex,
+    label_textures      => [],                               # больше не используется
+    label_letter_textures => \@menu_label_letters,
+    letter_w            => $LETTER_W,
+    letter_h            => $LETTER_H,
+    letter_spacing      => 0,
+    center_x            => $WIN_W / 2,
+    center_y            => $WIN_H - 100,
+    offset              => 34,
+    textures            => \@button_textures,
+);
+
+# Флаги движения (управляются событиями)
+my %move_flags = ( up => 0, down => 0, left => 0, right => 0 );
+
+my $event_ptr = malloc(56);
+my $src_rect  = malloc(16);
+my $dst_rect  = malloc(16);
+my $running   = 1;
+
+while ($running) {
+    # --- Обработка событий ---
+    while (SDL_PollEvent($event_ptr)) {
+        my $event_str = "\0" x 56;
+        memcpy($ffi->cast('string' => 'opaque', $event_str), $event_ptr, 56);
+        my $type = unpack('V', substr($event_str, 0, 4));
+
+        if ($type == 0x100) { $running = 0; }                 # SDL_QUIT
+        elsif ($type == 0x300) {   # SDL_KEYDOWN
+            my $scancode = unpack('V', substr($event_str, 16, 4));
+            my $sym      = unpack('V', substr($event_str, 20, 4));
+
+            if ($sym == 27) { $running = 0; }
+            elsif ($sym == 0x40000052) { $move_flags{up}    = 1; }
+            elsif ($sym == 0x40000051) { $move_flags{down}  = 1; }
+            elsif ($sym == 0x40000050) { $move_flags{left}  = 1; }
+            elsif ($sym == 0x4000004F) { $move_flags{right} = 1; }
+            # --- меню (по сканкодам) ---
+            elsif ($scancode == 0x04) {
+                $menu->open();
+                %move_flags = ( up => 0, down => 0, left => 0, right => 0 );
+            }
+            elsif ($scancode == 0x07) {
+                $menu->open();
+                %move_flags = ( up => 0, down => 0, left => 0, right => 0 );
+            }
+			
+            elsif ($scancode == 0x16) { $menu->close(); }   # S
+        }
+		
+        elsif ($type == 0x301) {                                # SDL_KEYUP
+            my $key = unpack('V', substr($event_str, 20, 4));
+            if ($key == 0x40000052) { $move_flags{up}    = 0; }
+            elsif ($key == 0x40000051) { $move_flags{down}  = 0; }
+            elsif ($key == 0x40000050) { $move_flags{left}  = 0; }
+            elsif ($key == 0x4000004F) { $move_flags{right} = 0; }
+        }
+    }
+
+    $menu->handle_input(\%move_flags);
+    $menu->update();
+    if ($menu->{visible}) {
+        $player->update({ up => 0, down => 0, left => 0, right => 0 });
+    } else {
+        $player->update(\%move_flags);
+    }
+
+    # --- Рендер ---
+    SDL_SetRenderDrawColor($renderer, 0,0,0,255);
+    SDL_RenderClear($renderer);
+
+    # Шахматный фон
+    if ($alpha_tex) {
+        my $src_alpha = pack('iiii', 0, 0, $TILE_SIZE, $TILE_SIZE);
+        my $src_tmp   = malloc(16);
+        memcpy($src_tmp, $ffi->cast('string' => 'opaque', $src_alpha), 16);
+        for my $row (0 .. $ROWS - 1) {
+            for my $col (0 .. $COLS - 1) {
+                my $dx = $MAP_X + $col * $TILE_SIZE;
+                my $dy = $MAP_Y + $row * $TILE_SIZE;
+                my $dst_alpha = pack('iiii', $dx, $dy, $TILE_SIZE, $TILE_SIZE);
+                my $dst_tmp   = malloc(16);
+                memcpy($dst_tmp, $ffi->cast('string' => 'opaque', $dst_alpha), 16);
+                SDL_RenderCopy($renderer, $alpha_tex, $src_tmp, $dst_tmp);
+                free($dst_tmp);
+            }
+        }
+        free($src_tmp);
+    }
+
+    # Карта
+    for my $row (0 .. $ROWS - 1) {
+        last if $row >= $map_rows;
+        for my $col (0 .. $COLS - 1) {
+            last if $col >= $map_cols;
+            my $id = $map[$row][$col];
+            next if $id <= 0;
+
+            my ($sx, $sy) = tile_src($id);
+            my $src_pack = pack('iiii', $sx, $sy, $TILE_SIZE, $TILE_SIZE);
+            memcpy($src_rect, $ffi->cast('string' => 'opaque', $src_pack), 16);
+
+            my $dx = $MAP_X + $col * $TILE_SIZE;
+            my $dy = $MAP_Y + $row * $TILE_SIZE;
+            my $dst_pack = pack('iiii', $dx, $dy, $TILE_SIZE, $TILE_SIZE);
+            memcpy($dst_rect, $ffi->cast('string' => 'opaque', $dst_pack), 16);
+
+            SDL_RenderCopy($renderer, $tileset_tex, $src_rect, $dst_rect);
+        }
+    }
+
+    $player->draw();
+	$menu->draw();              # <-- рисовать меню поверх всего
+
+    SDL_RenderPresent($renderer);
+    SDL_Delay(16);
+}
+
+free($src_rect); free($dst_rect); free($event_ptr);
+SDL_DestroyTexture($alpha_tex) if $alpha_tex;
+SDL_DestroyTexture($sprite_tex);
+SDL_DestroyTexture($tileset_tex);
+SDL_DestroyRenderer($renderer);
+SDL_DestroyWindow($window);
+Mix_CloseAudio();
+SDL_DestroyTexture($label_panel_tex) if $label_panel_tex;
+SDL_DestroyTexture($_) for values %letter_tex;
+SDL_Quit();

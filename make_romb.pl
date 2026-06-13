@@ -24,7 +24,7 @@ for my $i (0..3) {
     my $main   = $img->colorAllocate(@{$c->{main}});
     my $dark   = $img->colorAllocate(@{$c->{dark}});
     my $border = $img->colorAllocate(40,40,40);
-    my $white  = $img->colorAllocateAlpha(255,255,255,60);
+    my $white = $img->colorAllocateAlpha(255,255,255,0);
 
     my $poly = GD::Polygon->new;
     $poly->addPt($size/2, 0);

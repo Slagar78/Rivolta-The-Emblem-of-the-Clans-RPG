@@ -57,8 +57,6 @@ $ffi->attach( TTF_SizeUTF8 => ['opaque', 'string', 'opaque', 'opaque'] => 'int' 
 $ffi->attach( TTF_CloseFont        => ['opaque']                   => 'void' );
 $ffi->attach( TTF_Quit             => []                           => 'void' );
 
-$ffi->attach( SDL_LockSurface   => ['opaque'] => 'int' );
-$ffi->attach( SDL_UnlockSurface => ['opaque'] => 'void' );
 
 # Параметры окна и тайлов
 my $TILE_SIZE = 48;
@@ -104,54 +102,11 @@ my $sprite_tex  = SDL_CreateTextureFromSurface($renderer, $sprite_surf);
 SDL_FreeSurface($sprite_surf);
 SDL_SetTextureBlendMode($sprite_tex, 0x00000001);
 
-# --- Загрузка нужных символов из PNG (чёрные буквы превращаются в белые) ---
-
-# Функция замены чёрного (0,0,0,255) на белый (255,255,255,255) в поверхности RGBA
-sub surface_black_to_white {
-    my ($surf) = @_;
-    SDL_LockSurface($surf);
-
-    my $ptrsize = $Config{ptrsize};
-    my ($off_w, $off_h, $off_pitch, $off_pixels);
-    if ($ptrsize == 8) {
-        $off_w = 16; $off_h = 20; $off_pitch = 24; $off_pixels = 32;
-    } else {
-        $off_w = 8; $off_h = 12; $off_pitch = 16; $off_pixels = 20;
-    }
-
-    my $surf_addr = $ffi->cast('uint64' => 'opaque', $surf);
-    my $buf8 = "\0" x 8;
-
-    memcpy($ffi->cast('string' => 'opaque', $buf8), $ffi->cast('opaque' => 'uint64', $surf_addr + $off_w), 4);
-    my $w = unpack('i', substr($buf8, 0, 4));
-    memcpy($ffi->cast('string' => 'opaque', $buf8), $ffi->cast('opaque' => 'uint64', $surf_addr + $off_h), 4);
-    my $h = unpack('i', substr($buf8, 0, 4));
-    memcpy($ffi->cast('string' => 'opaque', $buf8), $ffi->cast('opaque' => 'uint64', $surf_addr + $off_pitch), 4);
-    my $pitch = unpack('i', substr($buf8, 0, 4));
-    memcpy($ffi->cast('string' => 'opaque', $buf8), $ffi->cast('opaque' => 'uint64', $surf_addr + $off_pixels), $ptrsize);
-    my $pixels_ptr = unpack(($ptrsize == 8 ? 'Q' : 'L'), $buf8);
-
-    my $buf_size = $pitch * $h;
-    my $pix_buf = "\0" x $buf_size;
-    memcpy($ffi->cast('string' => 'opaque', $pix_buf), $pixels_ptr, $buf_size);
-
-    my @pixels = unpack('V*', $pix_buf);
-    my @new;
-    my $black = 0xFF000000;
-    my $white = 0xFFFFFFFF;
-    for my $p (@pixels) {
-        push @new, ($p == $black) ? $white : $p;
-    }
-    my $new_buf = pack('V*', @new);
-    memcpy($pixels_ptr, $ffi->cast('string' => 'opaque', $new_buf), $buf_size);
-
-    SDL_UnlockSurface($surf);
-}
 
 # Загрузка
 my %letter_tex;
-my $LETTER_W = 12;
-my $LETTER_H = 16;
+my $LETTER_W = 20;
+my $LETTER_H = 32;
 
 # Заглавные A–Z (012–037)
 for my $i (0..25) {
@@ -160,7 +115,6 @@ for my $i (0..25) {
     my $path = sprintf('assets/fonts/white/symbol%03d.png', $num);
     next unless -f $path;
     my $surf = IMG_Load($path) or die "IMG_Load $path: " . SDL_GetError();
-    surface_black_to_white($surf);
     my $tex = SDL_CreateTextureFromSurface($renderer, $surf);
     SDL_FreeSurface($surf);
     SDL_SetTextureBlendMode($tex, 0x00000001);
@@ -174,7 +128,6 @@ for my $i (0..25) {
     my $path = sprintf('assets/fonts/white/symbol%03d.png', $num);
     next unless -f $path;
     my $surf = IMG_Load($path) or die "IMG_Load $path: " . SDL_GetError();
-    surface_black_to_white($surf);
     my $tex = SDL_CreateTextureFromSurface($renderer, $surf);
     SDL_FreeSurface($surf);
     SDL_SetTextureBlendMode($tex, 0x00000001);

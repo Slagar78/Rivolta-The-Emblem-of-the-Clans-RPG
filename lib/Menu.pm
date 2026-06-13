@@ -112,7 +112,7 @@ sub draw {
         my $btn_y = $right_btn->{y} - 32;
         my $panel_x = $btn_x + 64 + 16;
         my $panel_y = $right_btn->{y} - 24;
-        $self->{draw_cb}->($self->{label_panel_tex}, $panel_x, $panel_y, 0, 0, 128, 48);
+        $self->{draw_cb}->($self->{label_panel_tex}, $panel_x, $panel_y, 0, 0, 150, 48);
 
             if ($self->{label_letter_textures} && $self->{label_letter_textures}[$self->{selected}]) {
             my $letters = $self->{label_letter_textures}[$self->{selected}];
@@ -120,7 +120,7 @@ sub draw {
             my $lh = $self->{letter_h};
             my $sp  = $self->{letter_spacing};
             my $word_w = scalar(@$letters) * ($lw + $sp) - $sp;
-            my $start_x = $panel_x + (128 - $word_w) / 2;
+            my $start_x = $panel_x + (150 - $word_w) / 2;
             my $txt_y   = $panel_y + (48 - $lh) / 2;
 
             $self->{reset_color}->() if $self->{reset_color};

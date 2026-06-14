@@ -2,11 +2,11 @@
 name = "первая"
 folder = "map01"
 music = "assets/sounds/Ain.mp3"
-
+[[maps]]
 name = "Подземелье"
 folder = "dungeon"
 music = "assets/sounds/Ain.mp3"
-
+[[maps]]
 name = "Новая карта 3"
 folder = "map02"
 music = "assets/sounds/Ain.mp3"

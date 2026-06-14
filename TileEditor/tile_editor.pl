@@ -513,8 +513,10 @@ sub save_maplist {
     mkdir $dir unless -d $dir;
     open my $fh, '>', $maplist_path or warn "Cannot save maplist: $!";
     return unless $fh;
-    print $fh "[[maps]]\n";
+    
+    # Убираем print "[[maps]]\n"; отсюда
     for my $map (@map_list) {
+        print $fh "[[maps]]\n";                     # ← Каждая карта начинается с [[maps]]
         print $fh 'name = "', $map->{name}, "\"\n";
         print $fh 'folder = "', $map->{folder}, "\"\n";
         print $fh 'music = "', $map->{music}, "\"\n\n";

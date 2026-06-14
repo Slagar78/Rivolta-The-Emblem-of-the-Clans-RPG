@@ -7,6 +7,7 @@ use lib $FindBin::Bin;
 
 use File::Spec::Functions qw(catfile catdir);
 use File::Basename qw(dirname);
+use File::Path qw(rmtree);
 use Time::HiRes qw(time);
 
 my $BASE_DIR = $FindBin::Bin;   # \TileEditor
@@ -126,6 +127,7 @@ $ffi->attach( SDL_StopTextInput      => []                           => 'void' )
 $ffi->attach( SDL_GetModState        => []                           => 'uint' );
 $ffi->attach( SDL_SetRenderDrawBlendMode => ['opaque', 'int']       => 'int' );
 $ffi->attach( SDL_SetTextureColorMod => ['opaque', 'uint8', 'uint8', 'uint8'] => 'int' );
+$ffi->attach( SDL_SetTextureBlendMode => ['opaque', 'int'] => 'int' );
 
 $ffi->attach( IMG_Load                => ['string']                  => 'opaque' );
 $ffi->attach( IMG_Init                => ['int']                     => 'int' );
@@ -186,7 +188,7 @@ my $MAP_VIEW_H   = $TILE_AREA_H + $SCROLLBAR_W;
 my $TOP_BAR_H    = 90;
 my $PAL_AREA_H   = $MAP_VIEW_H;
 
-my $WIN_W = $PAL_PANEL_W + $MAP_VIEW_W;
+my $WIN_W = $PAL_PANEL_W + $MAP_VIEW_W + 150;   # расширили окно вправо на 150 пикселей
 my $WIN_H = $TOP_BAR_H + $MAP_VIEW_H;
 
 # ----- Main window and renderer -----
@@ -208,9 +210,11 @@ sub load_button_texture {
     }
     my $w = 40; my $h = 28;
     if ($filename eq 'apply.png')      { $w = 52; $h = 28; }
+    elsif ($filename eq 'add.png')     { $w = 52; $h = 28; }
+    elsif ($filename eq 'delete.png')  { $w = 52; $h = 28; }
     elsif ($filename eq 'collision.png') { $w = 60; $h = 28; }
     elsif ($filename eq 'select.png')  { $w = 46; $h = 28; }
-	elsif ($filename eq 'input.png') { $w = 64; $h = 34; }
+    elsif ($filename eq 'input.png')   { $w = 64; $h = 34; }
     my $s = SDL_CreateRGBSurface(0, $w, $h, 32, 0x00FF0000,0x0000FF00,0x000000FF,0xFF000000);
     my $fmt = $ffi->cast('opaque' => 'opaque', $s + 24);
     my $col = SDL_MapRGBA($fmt, 200,200,200,255);
@@ -227,7 +231,9 @@ my $btn_save_tex      = load_button_texture('save.png');       # 40x28
 my $btn_tiles_tex     = load_button_texture('tiles.png');      # 40x28
 my $btn_collision_tex = load_button_texture('collision.png');  # 60x28
 my $btn_select_tex    = load_button_texture('select.png');     # 46x28
-my $input_field_tex   = load_button_texture('input.png');      # 60x26 (поле ввода W/H)
+my $btn_add_tex       = load_button_texture('add.png');        # 52x28
+my $btn_delete_tex    = load_button_texture('delete.png');     # 52x28
+my $input_field_tex   = load_button_texture('input.png');      # 64x34 (поле ввода W/H)
 
 # ----- Загрузка символов (цифры + пробел) -----
 my @symbol_tex;
@@ -257,7 +263,30 @@ if (-f symbol_file('H.png')) {
     SDL_FreeSurface($surf) if $surf;
 }
 
-# Отладочный вывод
+# --- Загрузка букв для названий карт (как в игре) ---
+my %letter_tex;
+for my $i (0..25) {
+    my $num  = 12 + $i;                              # A-Z
+    my $char = chr(65 + $i);
+    my $path = sprintf('assets/fonts/white/symbol%03d.png', $num);
+    next unless -f $path;
+    my $surf = IMG_Load($path) or next;
+    my $tex  = SDL_CreateTextureFromSurface($renderer, $surf);
+    SDL_FreeSurface($surf);
+    SDL_SetTextureBlendMode($tex, 0x00000001);
+    $letter_tex{$char} = $tex;
+    # строчные a-z
+    $num = 38 + $i;
+    $char = chr(97 + $i);
+    $path = sprintf('assets/fonts/white/symbol%03d.png', $num);
+    next unless -f $path;
+    $surf = IMG_Load($path) or next;
+    $tex  = SDL_CreateTextureFromSurface($renderer, $surf);
+    SDL_FreeSurface($surf);
+    SDL_SetTextureBlendMode($tex, 0x00000001);
+    $letter_tex{$char} = $tex;
+}
+
 print "Buttons loaded:\n";
 print "  Apply:    " . ($btn_apply_tex     ? "OK" : "FAIL") . "\n";
 print "  Load:     " . ($btn_load_tex      ? "OK" : "FAIL") . "\n";
@@ -265,8 +294,10 @@ print "  Save:     " . ($btn_save_tex      ? "OK" : "FAIL") . "\n";
 print "  Tiles:    " . ($btn_tiles_tex     ? "OK" : "FAIL") . "\n";
 print "  Collision:" . ($btn_collision_tex ? "OK" : "FAIL") . "\n";
 print "  Select:   " . ($btn_select_tex    ? "OK" : "FAIL") . "\n";
+print "  Add:      " . ($btn_add_tex       ? "OK" : "FAIL") . "\n";
+print "  Delete:   " . ($btn_delete_tex    ? "OK" : "FAIL") . "\n";
 
-# ----- Tileset loading (без изменений) -----
+# ----- Tileset loading -----
 my $tileset_tex = undef;
 my $atlas_w = 0;
 my $atlas_h = 0;
@@ -425,10 +456,136 @@ my $selection = Selection->new(
 
 SDL_StartTextInput();
 
-# ----- Map loading -----
+# ----- Maplist и текущая карта -----
+my @map_list;
+my $current_map_folder = 'map01';
+my $current_map_name   = 'первая';
+my $current_map_music  = 'assets/sounds/Ain.mp3';
+
+# Панель списка карт (правая часть окна)
+my $list_panel_x = $PAL_PANEL_W + $MAP_VIEW_W;   # начинается сразу за картой
+my $list_panel_w = 150;
+my $list_item_h  = 20;
+my $list_scroll  = 0;
+my $list_visible = int(($WIN_H - $TOP_BAR_H) / $list_item_h);
+
+sub load_maplist {
+    my $maplist_path = catfile($FindBin::Bin, '..', 'data', 'map', 'maplist.toml');
+    return unless -f $maplist_path;
+    open my $fh, '<', $maplist_path or return;
+    my @maps;
+    my $current = {};
+    while (<$fh>) {
+        chomp;
+        s/^\s+//; s/\s+$//;
+        next if $_ eq '' || /^#/;
+        if (/^\[\[maps\]\]/) { next; }
+        if (/^name\s*=\s*"(.*)"\s*$/) {
+            if (%$current) { push @maps, $current; $current = {}; }
+            $current->{name} = $1;
+        }
+        elsif (/^folder\s*=\s*"(.*)"\s*$/) {
+            $current->{folder} = $1;
+        }
+        elsif (/^music\s*=\s*"(.*)"\s*$/) {
+            $current->{music} = $1;
+        }
+    }
+    if (%$current) { push @maps, $current; }
+    close $fh;
+    @map_list = @maps if @maps;
+    unless (@map_list) {
+        @map_list = ({ name => 'первая', folder => 'map01', music => 'assets/sounds/Ain.mp3' });
+    }
+    if (@map_list) {
+        my ($first) = grep { $_->{folder} eq $current_map_folder } @map_list;
+        if (!$first) {
+            $current_map_folder = $map_list[0]{folder};
+            $current_map_name   = $map_list[0]{name};
+            $current_map_music  = $map_list[0]{music};
+        }
+    }
+}
+
+sub save_maplist {
+    my $maplist_path = catfile($FindBin::Bin, '..', 'data', 'map', 'maplist.toml');
+    my $dir = dirname($maplist_path);
+    mkdir $dir unless -d $dir;
+    open my $fh, '>', $maplist_path or warn "Cannot save maplist: $!";
+    return unless $fh;
+    print $fh "[[maps]]\n";
+    for my $map (@map_list) {
+        print $fh 'name = "', $map->{name}, "\"\n";
+        print $fh 'folder = "', $map->{folder}, "\"\n";
+        print $fh 'music = "', $map->{music}, "\"\n\n";
+    }
+    close $fh;
+    print "Maplist saved to $maplist_path\n";
+}
+
+sub next_map_folder {
+    my $max = 0;
+    for my $m (@map_list) {
+        my ($num) = $m->{folder} =~ /(\d+)$/;
+        $max = $num if $num && $num > $max;
+    }
+    return sprintf("map%02d", $max + 1);
+}
+
+sub add_map {
+    my $new_folder = next_map_folder();
+    my $new_name   = "Новая карта " . scalar(@map_list+1);
+    my $music      = 'assets/sounds/Ain.mp3';
+    push @map_list, { name => $new_name, folder => $new_folder, music => $music };
+    save_maplist();
+    my $dir = catfile($FindBin::Bin, '..', 'data', 'map', $new_folder);
+    mkdir $dir;
+    my $layout_path = catfile($dir, 'layout.toml');
+    my %out = (
+        map => { cols => $MAP_COLS, rows => $MAP_ROWS },
+        tiles => {},
+        collision => {},
+    );
+    for my $r (0..$MAP_ROWS-1) {
+        $out{tiles}{sprintf("row%02d", $r)} = join ' ', (0) x $MAP_COLS;
+        $out{collision}{sprintf("row%02d", $r)} = join ' ', (0) x $MAP_COLS;
+    }
+    open my $fh, '>', $layout_path or warn "Cannot create $layout_path: $!";
+    print $fh toml_write(\%out);
+    close $fh;
+	
+    switch_to_map($new_folder);
+}
+
+sub delete_map {
+    return if @map_list <= 1;
+    my ($idx) = grep { $map_list[$_]{folder} eq $current_map_folder } 0..$#map_list;
+    return unless defined $idx;
+    my $dir = catfile($FindBin::Bin, '..', 'data', 'map', $current_map_folder);
+    rmtree($dir) if -d $dir;
+    splice @map_list, $idx, 1;
+    save_maplist();
+    my $new_folder = $map_list[0]{folder};
+	
+    switch_to_map($new_folder);
+}
+
+sub switch_to_map {
+    my ($folder) = @_;
+    save_map();
+    my ($info) = grep { $_->{folder} eq $folder } @map_list;
+    if ($info) {
+        $current_map_folder = $folder;
+        $current_map_name   = $info->{name};
+        $current_map_music  = $info->{music};
+    }
+    load_map_from_file($folder);
+}
+
+# ----- Map loading (из layout.toml) -----
 sub load_map_from_file {
     my ($folder) = @_;
-    $folder //= 'map01';                          # карта по умолчанию
+    $folder //= $current_map_folder;
     my $layout_path = catfile($FindBin::Bin, '..', 'data', 'map', $folder, 'layout.toml');
     return unless -f $layout_path;
     open(my $fh, '<', $layout_path) or return;
@@ -454,7 +611,7 @@ sub load_map_from_file {
         $selection->{rows} = $MAP_ROWS;
         $selection->cancel();
         recalc_scrolls();
-        print "Map loaded: ${MAP_COLS}x${MAP_ROWS} (TOML)\n";
+        print "Map loaded: ${MAP_COLS}x${MAP_ROWS} (TOML) from $folder\n";
         return 1;
     }
     return;
@@ -475,16 +632,6 @@ sub recalc_scrolls {
     $map_thumb_h = 16 if $map_thumb_h < 16;
     $map_thumb_h = $TILE_AREA_H if $map_thumb_h > $TILE_AREA_H;
     $map_thumb_x = 0; $map_thumb_y = 0;
-}
-
-unless (load_map_from_file('map01')) {
-    @map = ();
-    @collision = ();
-    for (0..$MAP_ROWS-1) {
-        $map[$_] = [(0) x $MAP_COLS];
-        $collision[$_] = [(0) x $MAP_COLS];
-    }
-    recalc_scrolls();
 }
 
 # ----- Helpers -----
@@ -531,22 +678,30 @@ sub paint_map_cell {
 }
 
 sub save_map {
-    my $folder = 'map01';                            # временно – потом можно брать из maplist
+    my $folder = $current_map_folder;
     my $dir = catfile($FindBin::Bin, '..', 'data', 'map', $folder);
     mkdir $dir unless -d $dir;
     my $layout_path = catfile($dir, 'layout.toml');
-    my %out = (
-        map => { cols => $MAP_COLS, rows => $MAP_ROWS },
-        tiles => {},
-        collision => {},
-    );
-    for my $r (0..$MAP_ROWS-1) {
-        $out{tiles}{sprintf("row%02d", $r)} = join ' ', @{$map[$r]};
-        $out{collision}{sprintf("row%02d", $r)} = join ' ', @{$collision[$r]};
-    }
     open(my $fh, '>', $layout_path) or warn "Cannot save $layout_path: $!";
     return unless $fh;
-    print $fh toml_write(\%out);
+
+    print $fh "[map]\n";
+    print $fh "cols = $MAP_COLS\n";
+    print $fh "rows = $MAP_ROWS\n\n";
+
+    print $fh "[tiles]\n";
+    for my $r (0..$MAP_ROWS-1) {
+        my $line = join ' ', @{$map[$r]};
+        printf $fh "row%02d = \"%s\"\n", $r, $line;
+    }
+    print $fh "\n";
+
+    print $fh "[collision]\n";
+    for my $r (0..$MAP_ROWS-1) {
+        my $line = join ' ', @{$collision[$r]};
+        printf $fh "row%02d = \"%s\"\n", $r, $line;
+    }
+
     close $fh;
     print "Map saved to $layout_path (TOML)\n";
 }
@@ -580,7 +735,7 @@ sub resize_map {
     print "Map size changed to ${MAP_COLS}x${MAP_ROWS}\n";
 }
 
-# ----- Функция отрисовки символа по символу (1=пробел, 2..11=0..9) -----
+# ----- Функция отрисовки символа (1=пробел, 2..11=0..9) -----
 sub draw_symbol {
     my ($ch, $x, $y) = @_;
     my $idx;
@@ -592,6 +747,19 @@ sub draw_symbol {
         $ffi->cast('string'=>'opaque', pack('iiii', $x, $y, 20, 32)));
 }
 
+# ----- Загрузка начальной карты и maplist -----
+load_maplist();
+unless (load_map_from_file($current_map_folder)) {
+    @map = ();
+    @collision = ();
+    for (0..$MAP_ROWS-1) {
+        $map[$_] = [(0) x $MAP_COLS];
+        $collision[$_] = [(0) x $MAP_COLS];
+    }
+    recalc_scrolls();
+}
+
+
 # ----- Main loop -----
 my $event_ptr = malloc(56);
 my $src_rect = malloc(16);
@@ -599,7 +767,7 @@ my $dst_rect = malloc(16);
 my $running = 1;
 print "Editor started. B=toggle collision, S=toggle select.\n";
 
-# ----- Параметры кнопок (новые) -----
+# ----- Параметры кнопок -----
 my $BTN_TOP = 26;
 my $BTN_H   = 28;
 my $LEFT_MARGIN = 20;
@@ -611,6 +779,8 @@ my $btn3_x = $btn2_x + 40 + $GAP;             # Save  40
 my $btn4_x = $btn3_x + 40 + $GAP;             # Tiles 40
 my $btn5_x = $btn4_x + 40 + $GAP;             # Collision 60
 my $btn6_x = $btn5_x + 60 + $GAP;             # Select 46
+my $btn7_x = 520;                             # Add 52
+my $btn8_x = 578;                             # Delete 52
 
 while ($running) {
     my $event_str = "\0" x 56;
@@ -622,10 +792,10 @@ while ($running) {
         if ($type == 0x100) { $running = 0; }
         elsif ($type == 0x303) {
             my $text = unpack('Z*', substr($event_str, 12, 32));
-        if ($text =~ /^\d$/ && $active_field) {
-        if ($active_field == 1 && length($input_w) < 3) { $input_w .= $text; }
-           elsif ($active_field == 2 && length($input_h) < 3) { $input_h .= $text; }
-           }
+            if ($text =~ /^\d$/ && $active_field) {
+                if ($active_field == 1 && length($input_w) < 3) { $input_w .= $text; }
+                elsif ($active_field == 2 && length($input_h) < 3) { $input_h .= $text; }
+            }
         }
         elsif ($type == 0x400) {   # Mouse motion
             $mouse_x = unpack('V', substr($event_str, 20, 4));
@@ -689,50 +859,62 @@ while ($running) {
             my $cy = unpack('V', substr($event_str, 24, 4));
             $mouse_x = $cx; $mouse_y = $cy;
 
-            # ----- Верхняя панель с новыми кнопками -----
+            # ----- Верхняя панель с кнопками -----
             if ($cy >= $BTN_TOP && $cy <= $BTN_TOP + $BTN_H) {
-                # Apply (52x28)
                 if ($cx >= $btn1_x && $cx <= $btn1_x + 52) {
                     resize_map(int($input_w) || $MAP_COLS, int($input_h) || $MAP_ROWS);
                     next;
                 }
-                # Load (40x28)
                 if ($cx >= $btn2_x && $cx <= $btn2_x + 40) {
-                    load_map_from_file('map01');
+                    load_map_from_file($current_map_folder);
                     next;
                 }
-                # Save (40x28)
                 if ($cx >= $btn3_x && $cx <= $btn3_x + 40) {
                     save_map();
                     $save_flash = 1;
                     $save_flash_time = time();
                     next;
                 }
-                # Tiles (40x28)
                 if ($cx >= $btn4_x && $cx <= $btn4_x + 40) {
                     $edit_mode = 0;
                     print "Mode: Tiles\n";
                     next;
                 }
-                # Collision (60x28)
                 if ($cx >= $btn5_x && $cx <= $btn5_x + 60) {
                     $edit_mode = 1;
                     print "Mode: Collision\n";
                     next;
                 }
-                # Select (46x28)
                 if ($cx >= $btn6_x && $cx <= $btn6_x + 46) {
                     $selection->toggle_select_mode();
                     print "Select mode: " . ($selection->{active} ? "ON" : "OFF") . "\n";
+                    next;
+                }
+                if ($cx >= $btn7_x && $cx <= $btn7_x + 52) {
+                    add_map();
+                    next;
+                }
+                if ($cx >= $btn8_x && $cx <= $btn8_x + 52) {
+                    delete_map();
                     next;
                 }
             }
 
             # Поля W/H
             my $fields_top = 54;
-            if ($cy >= $fields_top && $cy <= $fields_top + 26) {
-            if ($cx >= 380 && $cx <= 460) { $active_field = 1; next; }   # W: (подпись + поле)
-            if ($cx >= 470 && $cx <= 550) { $active_field = 2; next; }   # H: (подпись + поле)
+            if ($cy >= $fields_top && $cy <= $fields_top + 34) {
+                if ($cx >= 380 && $cx <= 444) { $active_field = 1; next; }
+                if ($cx >= 450 && $cx <= 514) { $active_field = 2; next; }
+            }
+
+            # Клик по списку карт (правая панель)
+            if ($cx >= $list_panel_x && $cx <= $list_panel_x + $list_panel_w &&
+                $cy >= $TOP_BAR_H && $cy <= $WIN_H) {
+                my $idx = $list_scroll + int(($cy - $TOP_BAR_H) / $list_item_h);
+                if ($idx < @map_list) {
+                    switch_to_map($map_list[$idx]{folder});
+                }
+                next;
             }
 
             # Palette click
@@ -846,6 +1028,16 @@ while ($running) {
                 my $max_t = $PAL_AREA_H-$pal_thumb_h;
                 $pal_thumb_y = ($pal_max_scroll>0 && $max_t>0) ? int(($pal_scroll_y/$pal_max_scroll)*$max_t) : 0;
             }
+
+            # скролл списка карт (правая панель)
+            if ($mouse_x >= $list_panel_x && $mouse_x <= $list_panel_x + $list_panel_w &&
+                $mouse_y >= $TOP_BAR_H && $mouse_y <= $WIN_H) {
+                $list_scroll -= $wy * 2;
+                $list_scroll = 0 if $list_scroll < 0;
+                my $max = @map_list - $list_visible;
+                $max = 0 if $max < 0;
+                $list_scroll = $max if $list_scroll > $max;
+            }
         }
         elsif ($type == 0x300) {   # Key down
             my $key = unpack('V', substr($event_str, 20, 4));
@@ -913,8 +1105,10 @@ while ($running) {
     SDL_RenderCopy($renderer, $btn_tiles_tex,     undef, $ffi->cast('string'=>'opaque', pack('iiii', $btn4_x, $by, 40, $BTN_H)));
     SDL_RenderCopy($renderer, $btn_collision_tex, undef, $ffi->cast('string'=>'opaque', pack('iiii', $btn5_x, $by, 60, $BTN_H)));
     SDL_RenderCopy($renderer, $btn_select_tex,    undef, $ffi->cast('string'=>'opaque', pack('iiii', $btn6_x, $by, 46, $BTN_H)));
+    SDL_RenderCopy($renderer, $btn_add_tex,       undef, $ffi->cast('string'=>'opaque', pack('iiii', $btn7_x, $by, 52, $BTN_H)));
+    SDL_RenderCopy($renderer, $btn_delete_tex,    undef, $ffi->cast('string'=>'opaque', pack('iiii', $btn8_x, $by, 52, $BTN_H)));
 
-    # Эффект нажатия: затемнение кнопки при зажатой ЛКМ
+    # Эффект нажатия
     if ($mouse_button == 1) {
         my ($bx, $bw) = (-1, 0);
         if ($mouse_y >= $BTN_TOP && $mouse_y <= $BTN_TOP + $BTN_H) {
@@ -924,6 +1118,8 @@ while ($running) {
             elsif ($mouse_x >= $btn4_x && $mouse_x <= $btn4_x + 40)   { ($bx, $bw) = ($btn4_x, 40); }
             elsif ($mouse_x >= $btn5_x && $mouse_x <= $btn5_x + 60)   { ($bx, $bw) = ($btn5_x, 60); }
             elsif ($mouse_x >= $btn6_x && $mouse_x <= $btn6_x + 46)   { ($bx, $bw) = ($btn6_x, 46); }
+            elsif ($mouse_x >= $btn7_x && $mouse_x <= $btn7_x + 52)   { ($bx, $bw) = ($btn7_x, 52); }
+            elsif ($mouse_x >= $btn8_x && $mouse_x <= $btn8_x + 52)   { ($bx, $bw) = ($btn8_x, 52); }
         }
         if ($bx != -1) {
             SDL_SetRenderDrawBlendMode($renderer, 1);
@@ -951,21 +1147,60 @@ while ($running) {
         SDL_RenderDrawRect($renderer, $ffi->cast('string'=>'opaque', $r));
     }
 
-    my $fw = 64; my $fh = 34;
-    my $fields_y = 54;          # чуть выше, ровно под кнопками
+    # Правая панель: список карт
+    my $panel_rect = pack('iiii', $list_panel_x, $TOP_BAR_H, $list_panel_w, $WIN_H - $TOP_BAR_H);
+    SDL_SetRenderDrawColor($renderer, 45,45,55,255);
+    SDL_RenderFillRect($renderer, $ffi->cast('string'=>'opaque', $panel_rect));
+    SDL_SetRenderDrawColor($renderer, 100,100,120,255);
+    SDL_RenderDrawRect($renderer, $ffi->cast('string'=>'opaque', $panel_rect));
 
-    # Подписи W: и H: (теперь PNG-файлы W.png и H.png)
+    for my $i ($list_scroll .. $list_scroll + $list_visible - 1) {
+        last if $i >= @map_list;
+        my $y = $TOP_BAR_H + ($i - $list_scroll) * $list_item_h;
+
+        if ($map_list[$i]{folder} eq $current_map_folder) {
+            my $sel = pack('iiii', $list_panel_x+2, $y, $list_panel_w-4, $list_item_h);
+            SDL_SetRenderDrawColor($renderer, 80,80,140,255);
+            SDL_RenderFillRect($renderer, $ffi->cast('string'=>'opaque', $sel));
+        }
+
+        my $name = $map_list[$i]{name} || '';
+
+        # Самый стабильный вариант — Solid
+        my $fg = pack('CCCC', 255, 255, 255, 255);   # белый
+
+        my $surf = TTF_RenderUTF8_Solid($font12, $name,
+            $ffi->cast('string'=>'opaque', $fg)
+        );
+
+        if ($surf) {
+            my $tex = SDL_CreateTextureFromSurface($renderer, $surf);
+            if ($tex) {
+                SDL_SetTextureBlendMode($tex, 0);
+                SDL_RenderCopy($renderer, $tex, undef,
+                    $ffi->cast('string'=>'opaque', pack('iiii', $list_panel_x + 4, $y + 2, $list_panel_w - 8, 20))
+                );
+                SDL_DestroyTexture($tex);
+            }
+            SDL_FreeSurface($surf);
+        }
+    }
+
+
+    my $fw = 64; my $fh = 34;
+    my $fields_y = 54;
+
     if ($label_w_tex) {
         SDL_RenderCopy($renderer, $label_w_tex, undef,
-            $ffi->cast('string'=>'opaque', pack('iiii', 380, $fields_y, 20, 20)));
+            $ffi->cast('string'=>'opaque', pack('iiii', 360, $fields_y, 20, 20)));
     }
     if ($label_h_tex) {
         SDL_RenderCopy($renderer, $label_h_tex, undef,
-            $ffi->cast('string'=>'opaque', pack('iiii', 470, $fields_y, 20, 20)));
+            $ffi->cast('string'=>'opaque', pack('iiii', 430, $fields_y, 20, 20)));
     }
 
-    # Поле W (фон input.png + символы)
-    my $rect_w = pack('iiii', 400, $fields_y, $fw, $fh);
+    # Поле W
+    my $rect_w = pack('iiii', 380, $fields_y, $fw, $fh);
     SDL_RenderCopy($renderer, $input_field_tex, undef, $ffi->cast('string'=>'opaque', $rect_w));
     if ($active_field == 1) {
         SDL_SetRenderDrawColor($renderer, 0,200,0,255);
@@ -975,15 +1210,15 @@ while ($running) {
         my $str = $input_w;
         $str = " " if $str eq "";
         my @chars = split //, $str;
-        my $sx = 402;
+        my $sx = 382;
         for my $ch (@chars) {
             draw_symbol($ch, $sx, $fields_y + 1);
             $sx += 20;
         }
     }
 
-    # Поле H (фон input.png + символы)
-    my $rect_h = pack('iiii', 490, $fields_y, $fw, $fh);
+    # Поле H
+    my $rect_h = pack('iiii', 450, $fields_y, $fw, $fh);
     SDL_RenderCopy($renderer, $input_field_tex, undef, $ffi->cast('string'=>'opaque', $rect_h));
     if ($active_field == 2) {
         SDL_SetRenderDrawColor($renderer, 0,200,0,255);
@@ -993,7 +1228,7 @@ while ($running) {
         my $str = $input_h;
         $str = " " if $str eq "";
         my @chars = split //, $str;
-        my $sx = 492;
+        my $sx = 452;
         for my $ch (@chars) {
             draw_symbol($ch, $sx, $fields_y + 1);
             $sx += 20;
@@ -1184,7 +1419,9 @@ SDL_DestroyTexture($btn_save_tex)      if $btn_save_tex;
 SDL_DestroyTexture($btn_tiles_tex)     if $btn_tiles_tex;
 SDL_DestroyTexture($btn_collision_tex) if $btn_collision_tex;
 SDL_DestroyTexture($btn_select_tex)    if $btn_select_tex;
-SDL_DestroyTexture($input_field_tex) if $input_field_tex;
+SDL_DestroyTexture($btn_add_tex)       if $btn_add_tex;
+SDL_DestroyTexture($btn_delete_tex)    if $btn_delete_tex;
+SDL_DestroyTexture($input_field_tex)   if $input_field_tex;
 foreach my $tex (@symbol_tex) {
     SDL_DestroyTexture($tex) if $tex;
 }

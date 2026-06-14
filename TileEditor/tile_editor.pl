@@ -19,6 +19,79 @@ use FFI::Platypus;
 use FFI::Platypus::Memory qw(malloc free memcpy);
 use Selection;
 
+# ----- Встроенный TOML (чистый Perl) -----
+sub parse_toml {
+    my ($str) = @_;
+    my %root;
+    my $current = \%root;
+    for my $line (split /\n/, $str) {
+        $line =~ s/\s*#.*//;
+        $line =~ s/\s+$//;
+        next if $line eq '';
+        if ($line =~ /^\s*\[(.+)\]\s*$/) {
+            my $section = $1;
+            $current = \%root;
+            for my $part (split /\./, $section) {
+                $part =~ s/\s+//g;
+                $current = $current->{$part} ||= {};
+            }
+            next;
+        }
+        if ($line =~ /^\s*(\S+)\s*=\s*(.+)\s*$/) {
+            my $key = $1;
+            my $val = $2;
+            $val =~ s/\s+$//;
+            $current->{$key} = _toml_value($val);
+        }
+    }
+    return \%root;
+}
+
+sub _toml_value {
+    my ($val) = @_;
+    return 'true'  if $val eq 'true';
+    return 'false' if $val eq 'false';
+    return undef   if $val eq 'nil';
+    return $1+0    if $val =~ /^([+\-]?\d+(?:\.\d+)?(?:[eE][+\-]?\d+)?)$/;
+    if ($val =~ /^"(.*)"$/) { my $s = $1; $s =~ s/\\"/"/g; $s =~ s/\\\\/\\/g; return $s; }
+    if ($val =~ /^'(.*)'$/) { return $1; }
+    if ($val =~ /^\[(.*)\]$/) {
+        my @arr = split /\s*,\s*/, $1;
+        return [ map { _toml_value($_) } @arr ];
+    }
+    return $val;
+}
+
+sub toml_write {
+    my ($data, $prefix) = @_;
+    $prefix //= '';
+    my $out = '';
+    for my $k (sort keys %$data) {
+        my $v = $data->{$k};
+        if (ref $v eq 'HASH') {
+            my $full = $prefix ? "$prefix.$k" : $k;
+            $out .= "[$full]\n" . toml_write($v, $full);
+        } elsif (ref $v eq 'ARRAY') {
+            my $arr = join ', ', map { _toml_format($_) } @$v;
+            $out .= "$k = [$arr]\n";
+        } else {
+            $out .= "$k = " . _toml_format($v) . "\n";
+        }
+    }
+    return $out;
+}
+
+sub _toml_format {
+    my $v = shift;
+    return 'true'  if $v eq 'true';
+    return 'false' if $v eq 'false';
+    return 'nil'   if !defined $v;
+    return $v+0    if $v =~ /^[+\-]?\d+(?:\.\d+)?(?:[eE][+\-]?\d+)?$/;
+    $v =~ s/\\/\\\\/g;
+    $v =~ s/"/\\"/g;
+    return '"' . $v . '"';
+}
+
 my $ffi = FFI::Platypus->new(api => 2);
 $ffi->lib('SDL2');
 $ffi->lib('SDL2_image');
@@ -354,55 +427,37 @@ SDL_StartTextInput();
 
 # ----- Map loading -----
 sub load_map_from_file {
-    my ($filepath) = @_;
-    if (-f $filepath) {
-        open(my $fh, '<', $filepath) or return;
-        my @lines;
-        my @new_coll;
-        my $in_collision = 0;
-        while (<$fh>) {
-            chomp;
-            s/^\s+//; s/\s+$//;
-            if (/^#collision/i) { $in_collision = 1; next; }
-            next if $_ eq '' || $_ =~ /^\s+$/;   # пропускаем пустые и пробельные строки
-            if (!$in_collision) {
-                push @lines, [split /\s+/, $_];
-            } else {
-                push @new_coll, [split /\s+/, $_];
-            }
+    my ($folder) = @_;
+    $folder //= 'map01';                          # карта по умолчанию
+    my $layout_path = catfile($FindBin::Bin, '..', 'data', 'map', $folder, 'layout.toml');
+    return unless -f $layout_path;
+    open(my $fh, '<', $layout_path) or return;
+    my $raw = do { local $/; <$fh> };
+    close $fh;
+    my $data = parse_toml($raw);
+    if ($data->{map}) {
+        $MAP_COLS = $data->{map}{cols} // 100;
+        $MAP_ROWS = $data->{map}{rows} // 20;
+        $input_w = "$MAP_COLS";
+        $input_h = "$MAP_ROWS";
+        @map = ();
+        @collision = ();
+        for my $r (0..$MAP_ROWS-1) {
+            my $tile_row = $data->{tiles}{sprintf("row%02d", $r)} // '';
+            my $coll_row = $data->{collision}{sprintf("row%02d", $r)} // '';
+            $map[$r] = [split /\s+/, $tile_row];
+            $collision[$r] = [split /\s+/, $coll_row];
+            while (@{$map[$r]} < $MAP_COLS) { push @{$map[$r]}, 0; }
+            while (@{$collision[$r]} < $MAP_COLS) { push @{$collision[$r]}, 0; }
         }
-        close $fh;
-
-        if (@lines) {
-            my $new_rows = @lines;
-            my $new_cols = 0;
-            for my $r (@lines) { my $c = scalar @$r; $new_cols = $c if $c > $new_cols; }
-            @map = ();
-            for my $r (@lines) { push @map, [@{$r}, (0) x ($new_cols - @{$r})]; }
-            if (@new_coll) {
-                @collision = ();
-                for my $r (0..$new_rows-1) {
-                    my $crow = $new_coll[$r] // [];
-                    while (@$crow < $new_cols) { push @$crow, 0; }
-                    push @collision, [@$crow[0..$new_cols-1]];
-                }
-            } else {
-                @collision = ();
-                for (0..$new_rows-1) { $collision[$_] = [(0) x $new_cols]; }
-            }
-            $MAP_ROWS = $new_rows;
-            $MAP_COLS = $new_cols;
-            $input_w = "$MAP_COLS";
-            $input_h = "$MAP_ROWS";
-            $selection->{cols} = $MAP_COLS;
-            $selection->{rows} = $MAP_ROWS;
-            $selection->cancel();
-            recalc_scrolls();
-            print "Map loaded: ${MAP_COLS}x${MAP_ROWS}\n";
-            return 1;
-        }
+        $selection->{cols} = $MAP_COLS;
+        $selection->{rows} = $MAP_ROWS;
+        $selection->cancel();
+        recalc_scrolls();
+        print "Map loaded: ${MAP_COLS}x${MAP_ROWS} (TOML)\n";
+        return 1;
     }
-    return 0;
+    return;
 }
 
 sub recalc_scrolls {
@@ -422,7 +477,7 @@ sub recalc_scrolls {
     $map_thumb_x = 0; $map_thumb_y = 0;
 }
 
-unless (load_map_from_file(asset('map', 'map01.txt'))) {
+unless (load_map_from_file('map01')) {
     @map = ();
     @collision = ();
     for (0..$MAP_ROWS-1) {
@@ -476,16 +531,24 @@ sub paint_map_cell {
 }
 
 sub save_map {
-    my $save_file = asset('map', 'map01.txt');
-    my $dir = dirname($save_file);
+    my $folder = 'map01';                            # временно – потом можно брать из maplist
+    my $dir = catfile($FindBin::Bin, '..', 'data', 'map', $folder);
     mkdir $dir unless -d $dir;
-    open(my $fh, '>', $save_file) or warn "Cannot save $save_file: $!";
+    my $layout_path = catfile($dir, 'layout.toml');
+    my %out = (
+        map => { cols => $MAP_COLS, rows => $MAP_ROWS },
+        tiles => {},
+        collision => {},
+    );
+    for my $r (0..$MAP_ROWS-1) {
+        $out{tiles}{sprintf("row%02d", $r)} = join ' ', @{$map[$r]};
+        $out{collision}{sprintf("row%02d", $r)} = join ' ', @{$collision[$r]};
+    }
+    open(my $fh, '>', $layout_path) or warn "Cannot save $layout_path: $!";
     return unless $fh;
-    for my $row (@map) { print $fh join(' ', @$row), "\n"; }
-    print $fh "\n#collision\n";
-    for my $row (@collision) { print $fh join(' ', @$row), "\n"; }
+    print $fh toml_write(\%out);
     close $fh;
-    print "Map saved to $save_file\n";
+    print "Map saved to $layout_path (TOML)\n";
 }
 
 sub resize_map {
@@ -635,7 +698,7 @@ while ($running) {
                 }
                 # Load (40x28)
                 if ($cx >= $btn2_x && $cx <= $btn2_x + 40) {
-                    load_map_from_file(asset('map', 'map01.txt'));
+                    load_map_from_file('map01');
                     next;
                 }
                 # Save (40x28)

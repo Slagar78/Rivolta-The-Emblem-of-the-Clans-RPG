@@ -1,0 +1,9 @@
+[[maps]]
+name = "первая"
+folder = "map01"
+music = "assets/sounds/Ain.mp3"
+
+[[maps]]
+name = "Подземелье"
+folder = "dungeon"
+music = "assets/sounds/Ain.mp3"

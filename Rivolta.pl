@@ -14,6 +14,7 @@ use Camera;
 use Rain;
 use Intro;
 use TextRenderer;
+use TOML::Tiny qw(from_toml);
 
 my $ffi = FFI::Platypus->new(api => 2);
 $ffi->lib('SDL2');
@@ -172,32 +173,35 @@ my $text_renderer = TextRenderer->new(
 );
 
 # --- Карта ---
-my $map_path = 'assets/map/map01.txt';
-die "Map file missing" unless -f $map_path;
-my @map; my @collision; my $map_cols=0; my $map_rows=0;
-my $music_path = undef;
-open(my $fh, '<', $map_path) or die $!;
-my @lines; my $in_coll=0;
-while (<$fh>) {
-    chomp; s/^\s+//; s/\s+$//;
-    if (/^#music\s+(.+)/i) {
-        $music_path = $1;
-        next;
-    }
-    if (/^#collision/i) { $in_coll=1; next; }
-    next if $_ eq '' && !$in_coll;
-    if (!$in_coll) { push @lines, [split /\s+/, $_]; }
-    else           { push @collision, [split /\s+/, $_]; }
-}
-close $fh;
+my $maplist_path = 'data/map/maplist.toml';
+die "Maplist not found: $maplist_path" unless -f $maplist_path;
+my $maplist_raw = do { local $/; open my $fh, '<', $maplist_path; <$fh> };
+my $maplist = from_toml($maplist_raw);
+my $selected_map = $maplist->{maps}[0] or die "No maps in maplist";
 
-if (@lines) {
-    $map_rows = @lines;
-    for my $r (@lines) { my $c=scalar @$r; $map_cols=$c if $c>$map_cols; }
-    @map = ();
-    for my $r (@lines) { push @map, [@{$r}, (0) x ($map_cols - @{$r})]; }
+my $map_folder   = $selected_map->{folder};           # например "map01"
+my $music_path   = $selected_map->{music};            # путь к музыке
+my $layout_path  = "data/map/$map_folder/layout.toml";
+die "Layout not found: $layout_path" unless -f $layout_path;
+
+my $layout_raw = do { local $/; open my $fh, '<', $layout_path; <$fh> };
+my $layout = from_toml($layout_raw);
+
+my $map_cols = $layout->{map}{cols} // die "No cols in layout";
+my $map_rows = $layout->{map}{rows} // die "No rows in layout";
+
+my @map;
+my @collision;
+
+for my $r (0 .. $map_rows - 1) {
+    my $tile_row = $layout->{tiles}{sprintf("row%02d", $r)} // '';
+    my $coll_row = $layout->{collision}{sprintf("row%02d", $r)} // '';
+    push @map, [split /\s+/, $tile_row];
+    push @collision, [split /\s+/, $coll_row];
+    # дополнить нулями до нужной ширины
+    while (@{$map[-1]} < $map_cols) { push @{$map[-1]}, 0; }
+    while (@{$collision[-1]} < $map_cols) { push @{$collision[-1]}, 0; }
 }
-# Остальная обработка @collision (если нужно) без изменений.
 
 
 sub tile_src {

@@ -7,8 +7,9 @@ use lib $FindBin::Bin;
 
 use File::Spec::Functions qw(catfile catdir);
 use File::Basename qw(dirname);
+use Time::HiRes qw(time);
 
-my $BASE_DIR = $FindBin::Bin;
+my $BASE_DIR = $FindBin::Bin;   # \TileEditor
 if (! -d catdir($BASE_DIR, 'assets')) {
     $BASE_DIR = catdir($BASE_DIR, '..');
 }
@@ -51,6 +52,7 @@ $ffi->attach( SDL_StartTextInput     => []                           => 'void' )
 $ffi->attach( SDL_StopTextInput      => []                           => 'void' );
 $ffi->attach( SDL_GetModState        => []                           => 'uint' );
 $ffi->attach( SDL_SetRenderDrawBlendMode => ['opaque', 'int']       => 'int' );
+$ffi->attach( SDL_SetTextureColorMod => ['opaque', 'uint8', 'uint8', 'uint8'] => 'int' );
 
 $ffi->attach( IMG_Load                => ['string']                  => 'opaque' );
 $ffi->attach( IMG_Init                => ['int']                     => 'int' );
@@ -58,6 +60,8 @@ $ffi->attach( IMG_Init                => ['int']                     => 'int' );
 $ffi->attach( TTF_Init               => []                           => 'int' );
 $ffi->attach( TTF_OpenFont           => ['string', 'int']            => 'opaque' );
 $ffi->attach( TTF_RenderUTF8_Solid   => ['opaque', 'string', 'opaque'] => 'opaque' );
+$ffi->attach( TTF_RenderUTF8_Blended => ['opaque', 'string', 'opaque'] => 'opaque' );
+$ffi->attach( TTF_RenderUTF8_Shaded => ['opaque', 'string', 'opaque', 'opaque'] => 'opaque' );
 $ffi->attach( TTF_CloseFont          => ['opaque']                   => 'void' );
 $ffi->attach( TTF_Quit               => []                           => 'void' );
 
@@ -67,11 +71,20 @@ die "IMG_Init: " . SDL_GetError() unless IMG_Init(2) & 2;
 die "TTF_Init: " . SDL_GetError() if TTF_Init() != 0;
 SDL_SetHint("SDL_HINT_RENDER_SCALE_QUALITY", "0");
 
+# ----- Пути -----
 sub asset {
     return catfile($BASE_DIR, 'assets', @_);
 }
 
-# ----- Font -----
+sub button_file {
+    return catfile($FindBin::Bin, 'buttons', @_);
+}
+
+sub symbol_file {
+    return catfile($FindBin::Bin, 'symbols', @_);
+}
+
+# ----- Font (из assets) -----
 my $FONT_PATH = asset('fonts', 'arial.ttf');
 $FONT_PATH = "C:/Windows/Fonts/arial.ttf" unless -f $FONT_PATH;
 die "No font found! Put arial.ttf in ../assets/fonts/" unless -f $FONT_PATH;
@@ -79,36 +92,108 @@ my $font24 = TTF_OpenFont($FONT_PATH, 24) or die "Cannot open font 24";
 my $font16 = TTF_OpenFont($FONT_PATH, 16) or die "Cannot open font 16";
 my $font12 = TTF_OpenFont($FONT_PATH, 12) or die "Cannot open font 12";
 
-# ----- ФИКСИРОВАННЫЕ ПАРАМЕТРЫ (компактный редактор) -----
-my $TILE_SIZE    = 48;                     # реальный размер тайла (в файлах)
-my $SCALE        = 0.5;                    # отображение 24x24
-my $VISIBLE_COLS = 10;                     # видимых столбцов карты
-my $VISIBLE_ROWS = 17;                     # видимых строк карты (чтобы занять ≈500 пикселей высоты)
+# ----- FIXED PARAMS -----
+my $TILE_SIZE    = 48;
+my $SCALE        = 0.5;
+my $VISIBLE_COLS = 10;
+my $VISIBLE_ROWS = 17;
 
 my $PAL_COLS     = 16;
-my $PAL_TILE_W   = $TILE_SIZE * $SCALE;    # 24
+my $PAL_TILE_W   = $TILE_SIZE * $SCALE;
 my $PAL_TILE_H   = $TILE_SIZE * $SCALE;
-my $PAL_WIDTH    = $PAL_COLS * $PAL_TILE_W; # 384
+my $PAL_WIDTH    = $PAL_COLS * $PAL_TILE_W;
 my $SCROLLBAR_W  = 16;
-my $PAL_PANEL_W  = $PAL_WIDTH + $SCROLLBAR_W; # 400
+my $PAL_PANEL_W  = $PAL_WIDTH + $SCROLLBAR_W;
 
-my $TILE_AREA_W  = $VISIBLE_COLS * $PAL_TILE_W;  # 240
-my $TILE_AREA_H  = $VISIBLE_ROWS * $PAL_TILE_H;  # 408
+my $TILE_AREA_W  = $VISIBLE_COLS * $PAL_TILE_W;
+my $TILE_AREA_H  = $VISIBLE_ROWS * $PAL_TILE_H;
 
-my $MAP_VIEW_W   = $TILE_AREA_W + $SCROLLBAR_W;  # 256
-my $MAP_VIEW_H   = $TILE_AREA_H + $SCROLLBAR_W;  # 424
-my $TOP_BAR_H    = 80;
-my $PAL_AREA_H   = $MAP_VIEW_H;                  # палитра по высоте как карта
+my $MAP_VIEW_W   = $TILE_AREA_W + $SCROLLBAR_W;
+my $MAP_VIEW_H   = $TILE_AREA_H + $SCROLLBAR_W;
+my $TOP_BAR_H    = 90;
+my $PAL_AREA_H   = $MAP_VIEW_H;
 
-my $WIN_W = $PAL_PANEL_W + $MAP_VIEW_W;          # 656
-my $WIN_H = $TOP_BAR_H + $MAP_VIEW_H;            # 504
+my $WIN_W = $PAL_PANEL_W + $MAP_VIEW_W;
+my $WIN_H = $TOP_BAR_H + $MAP_VIEW_H;
 
 # ----- Main window and renderer -----
 my $window   = SDL_CreateWindow("Tile Map Editor", 100, 100, $WIN_W, $WIN_H, 0x00000004);
 my $renderer = SDL_CreateRenderer($window, -1, 0x0000000A);
 die "Main renderer: " . SDL_GetError() unless $renderer;
 
-# ----- Tileset loading (как раньше) -----
+# ----- Загрузка текстур кнопок -----
+sub load_button_texture {
+    my ($filename) = @_;
+    my $full = button_file($filename);
+    if (-f $full) {
+        my $surf = IMG_Load($full);
+        if ($surf) {
+            my $tex = SDL_CreateTextureFromSurface($renderer, $surf);
+            SDL_FreeSurface($surf);
+            return $tex;
+        }
+    }
+    my $w = 40; my $h = 28;
+    if ($filename eq 'apply.png')      { $w = 52; $h = 28; }
+    elsif ($filename eq 'collision.png') { $w = 60; $h = 28; }
+    elsif ($filename eq 'select.png')  { $w = 46; $h = 28; }
+	elsif ($filename eq 'input.png') { $w = 64; $h = 34; }
+    my $s = SDL_CreateRGBSurface(0, $w, $h, 32, 0x00FF0000,0x0000FF00,0x000000FF,0xFF000000);
+    my $fmt = $ffi->cast('opaque' => 'opaque', $s + 24);
+    my $col = SDL_MapRGBA($fmt, 200,200,200,255);
+    my $rr = pack('iiii', 0,0,$w,$h);
+    SDL_FillRect($s, $ffi->cast('string' => 'opaque', $rr), $col);
+    my $tex = SDL_CreateTextureFromSurface($renderer, $s);
+    SDL_FreeSurface($s);
+    return $tex;
+}
+
+my $btn_apply_tex     = load_button_texture('apply.png');      # 52x28
+my $btn_load_tex      = load_button_texture('load.png');       # 40x28
+my $btn_save_tex      = load_button_texture('save.png');       # 40x28
+my $btn_tiles_tex     = load_button_texture('tiles.png');      # 40x28
+my $btn_collision_tex = load_button_texture('collision.png');  # 60x28
+my $btn_select_tex    = load_button_texture('select.png');     # 46x28
+my $input_field_tex   = load_button_texture('input.png');      # 60x26 (поле ввода W/H)
+
+# ----- Загрузка символов (цифры + пробел) -----
+my @symbol_tex;
+for my $i (1..11) {
+    my $fname = sprintf("symbol%03d.png", $i);
+    my $full = symbol_file($fname);
+    if (-f $full) {
+        my $surf = IMG_Load($full);
+        if ($surf) {
+            $symbol_tex[$i] = SDL_CreateTextureFromSurface($renderer, $surf);
+            SDL_FreeSurface($surf);
+        }
+    }
+}
+
+# ----- Загрузка иконок W и H -----
+my $label_w_tex = undef;
+my $label_h_tex = undef;
+if (-f symbol_file('W.png')) {
+    my $surf = IMG_Load(symbol_file('W.png'));
+    $label_w_tex = SDL_CreateTextureFromSurface($renderer, $surf) if $surf;
+    SDL_FreeSurface($surf) if $surf;
+}
+if (-f symbol_file('H.png')) {
+    my $surf = IMG_Load(symbol_file('H.png'));
+    $label_h_tex = SDL_CreateTextureFromSurface($renderer, $surf) if $surf;
+    SDL_FreeSurface($surf) if $surf;
+}
+
+# Отладочный вывод
+print "Buttons loaded:\n";
+print "  Apply:    " . ($btn_apply_tex     ? "OK" : "FAIL") . "\n";
+print "  Load:     " . ($btn_load_tex      ? "OK" : "FAIL") . "\n";
+print "  Save:     " . ($btn_save_tex      ? "OK" : "FAIL") . "\n";
+print "  Tiles:    " . ($btn_tiles_tex     ? "OK" : "FAIL") . "\n";
+print "  Collision:" . ($btn_collision_tex ? "OK" : "FAIL") . "\n";
+print "  Select:   " . ($btn_select_tex    ? "OK" : "FAIL") . "\n";
+
+# ----- Tileset loading (без изменений) -----
 my $tileset_tex = undef;
 my $atlas_w = 0;
 my $atlas_h = 0;
@@ -121,7 +206,7 @@ my $atlas_path  = "$tileset_dir/tileset.png";
 if (-f $atlas_path) {
     my $surf = IMG_Load($atlas_path);
     if ($surf) {
-        $atlas_w = 3072;   # 64*48
+        $atlas_w = 3072;
         $atlas_h = 3072;
         $tileset_tex = SDL_CreateTextureFromSurface($renderer, $surf);
         SDL_FreeSurface($surf);
@@ -154,7 +239,7 @@ unless ($tileset_tex) {
         for my $i (0..4095) {
             my $s = SDL_CreateRGBSurface(0, $TILE_SIZE, $TILE_SIZE, 32, 0x00FF0000,0x0000FF00,0x000000FF,0xFF000000);
             my $fmt = $ffi->cast('opaque' => 'opaque', $s + 24);
-            my $col = SDL_MapRGBA($fmt, int(rand(255)), int(rand(255)), int(rand(255)), 255);
+            my $col = SDL_MapRGBA($fmt, 128,128,128,255);
             my $rr = pack('iiii', 0,0,$TILE_SIZE,$TILE_SIZE);
             SDL_FillRect($s, $ffi->cast('string' => 'opaque', $rr), $col);
             push @tiles, SDL_CreateTextureFromSurface($renderer, $s);
@@ -169,7 +254,7 @@ sub tile_src {
     my ($id) = @_;
     return (0, 0) if $id < 0 || !$tileset_tex;
     my $TILES_PER_STRIP = 16;
-    my $STRIP_WIDTH_PX  = $TILES_PER_STRIP * $TILE_SIZE;   # 768
+    my $STRIP_WIDTH_PX  = $TILES_PER_STRIP * $TILE_SIZE;
     my $TILES_HIGH      = 64;
 
     my $strip = int($id / ($TILES_PER_STRIP * $TILES_HIGH));
@@ -204,7 +289,6 @@ $pal_thumb_h = 16 if $pal_thumb_h < 16;
 $pal_thumb_h = $PAL_AREA_H if $pal_thumb_h > $PAL_AREA_H;
 my $pal_thumb_y = 0;
 
-# Скроллы карты
 my $map_scroll_x = 0;
 my $map_scroll_y = 0;
 my $total_map_w = $MAP_COLS * $PAL_TILE_W;
@@ -239,8 +323,7 @@ my $pal_drag_thumb_y = 0;
 
 my $input_w = "$MAP_COLS";
 my $input_h = "$MAP_ROWS";
-my $active_field = 0;            # 0 = none, 1 = width, 2 = height
-my $white_color_ptr = $ffi->cast('string'=>'opaque', pack('CCCC',255,255,255,255));
+my $active_field = 0;
 my $edit_mode = 0;
 my $save_flash = 0;
 my $save_flash_time = 0;
@@ -281,7 +364,7 @@ sub load_map_from_file {
             chomp;
             s/^\s+//; s/\s+$//;
             if (/^#collision/i) { $in_collision = 1; next; }
-            next if $_ eq '' && !$in_collision;
+            next if $_ eq '' || $_ =~ /^\s+$/;   # пропускаем пустые и пробельные строки
             if (!$in_collision) {
                 push @lines, [split /\s+/, $_];
             } else {
@@ -434,12 +517,37 @@ sub resize_map {
     print "Map size changed to ${MAP_COLS}x${MAP_ROWS}\n";
 }
 
+# ----- Функция отрисовки символа по символу (1=пробел, 2..11=0..9) -----
+sub draw_symbol {
+    my ($ch, $x, $y) = @_;
+    my $idx;
+    if ($ch eq ' ') { $idx = 1; }
+    elsif ($ch =~ /^\d$/) { $idx = 2 + int($ch); }
+    else { return; }
+    return if !$symbol_tex[$idx];
+    SDL_RenderCopy($renderer, $symbol_tex[$idx], undef,
+        $ffi->cast('string'=>'opaque', pack('iiii', $x, $y, 20, 32)));
+}
+
 # ----- Main loop -----
 my $event_ptr = malloc(56);
 my $src_rect = malloc(16);
 my $dst_rect = malloc(16);
 my $running = 1;
 print "Editor started. B=toggle collision, S=toggle select.\n";
+
+# ----- Параметры кнопок (новые) -----
+my $BTN_TOP = 26;
+my $BTN_H   = 28;
+my $LEFT_MARGIN = 20;
+my $GAP = 12;
+
+my $btn1_x = $LEFT_MARGIN;                    # Apply 52
+my $btn2_x = $btn1_x + 52 + $GAP;             # Load  40
+my $btn3_x = $btn2_x + 40 + $GAP;             # Save  40
+my $btn4_x = $btn3_x + 40 + $GAP;             # Tiles 40
+my $btn5_x = $btn4_x + 40 + $GAP;             # Collision 60
+my $btn6_x = $btn5_x + 60 + $GAP;             # Select 46
 
 while ($running) {
     my $event_str = "\0" x 56;
@@ -451,10 +559,10 @@ while ($running) {
         if ($type == 0x100) { $running = 0; }
         elsif ($type == 0x303) {
             my $text = unpack('Z*', substr($event_str, 12, 32));
-            if ($text =~ /^\d$/ && $active_field) {
-                if ($active_field == 1) { $input_w .= $text; }
-                elsif ($active_field == 2) { $input_h .= $text; }
-            }
+        if ($text =~ /^\d$/ && $active_field) {
+        if ($active_field == 1 && length($input_w) < 3) { $input_w .= $text; }
+           elsif ($active_field == 2 && length($input_h) < 3) { $input_h .= $text; }
+           }
         }
         elsif ($type == 0x400) {   # Mouse motion
             $mouse_x = unpack('V', substr($event_str, 20, 4));
@@ -518,47 +626,50 @@ while ($running) {
             my $cy = unpack('V', substr($event_str, 24, 4));
             $mouse_x = $cx; $mouse_y = $cy;
 
-            # ----- Верхняя панель (красивые кнопки) -----
-            if ($cy >= 30 && $cy <= 60) {
-                # Кнопка Apply
-                if ($cx >= 20 && $cx <= 90) {
+            # ----- Верхняя панель с новыми кнопками -----
+            if ($cy >= $BTN_TOP && $cy <= $BTN_TOP + $BTN_H) {
+                # Apply (52x28)
+                if ($cx >= $btn1_x && $cx <= $btn1_x + 52) {
                     resize_map(int($input_w) || $MAP_COLS, int($input_h) || $MAP_ROWS);
                     next;
                 }
-                # Кнопка Load
-                if ($cx >= 100 && $cx <= 170) {
+                # Load (40x28)
+                if ($cx >= $btn2_x && $cx <= $btn2_x + 40) {
                     load_map_from_file(asset('map', 'map01.txt'));
                     next;
                 }
-                # Кнопка Save
-                if ($cx >= 180 && $cx <= 250) {
+                # Save (40x28)
+                if ($cx >= $btn3_x && $cx <= $btn3_x + 40) {
                     save_map();
                     $save_flash = 1;
-                    $save_flash_time = time;
+                    $save_flash_time = time();
                     next;
                 }
-                # Поле W (с подписью)
-                if ($cx >= 270 && $cx <= 320) {
-                    $active_field = 1;
+                # Tiles (40x28)
+                if ($cx >= $btn4_x && $cx <= $btn4_x + 40) {
+                    $edit_mode = 0;
+                    print "Mode: Tiles\n";
                     next;
                 }
-                # Поле H (с подписью)
-                if ($cx >= 340 && $cx <= 390) {
-                    $active_field = 2;
+                # Collision (60x28)
+                if ($cx >= $btn5_x && $cx <= $btn5_x + 60) {
+                    $edit_mode = 1;
+                    print "Mode: Collision\n";
                     next;
                 }
-                # Кнопка Collision
-                if ($cx >= 410 && $cx <= 480) {
-                    $edit_mode = 1 - $edit_mode;
-                    print "Mode switched to " . ($edit_mode ? "Collision" : "Tiles") . "\n";
-                    next;
-                }
-                # Кнопка Select
-                if ($cx >= 490 && $cx <= 560) {
+                # Select (46x28)
+                if ($cx >= $btn6_x && $cx <= $btn6_x + 46) {
                     $selection->toggle_select_mode();
                     print "Select mode: " . ($selection->{active} ? "ON" : "OFF") . "\n";
                     next;
                 }
+            }
+
+            # Поля W/H
+            my $fields_top = 54;
+            if ($cy >= $fields_top && $cy <= $fields_top + 26) {
+            if ($cx >= 380 && $cx <= 460) { $active_field = 1; next; }   # W: (подпись + поле)
+            if ($cx >= 470 && $cx <= 550) { $active_field = 2; next; }   # H: (подпись + поле)
             }
 
             # Palette click
@@ -716,7 +827,7 @@ while ($running) {
         }
     }
 
-    if ($save_flash && time - $save_flash_time >= 0.5) {
+    if ($save_flash && time() - $save_flash_time >= 0.5) {
         $save_flash = 0;
     }
 
@@ -724,89 +835,107 @@ while ($running) {
     SDL_SetRenderDrawColor($renderer, 40,40,40,255);
     SDL_RenderClear($renderer);
 
-    # Верхняя панель с кнопками и подписями
+    # Верхняя панель
     my $top_rect = pack('iiii', 0,0,$WIN_W,$TOP_BAR_H);
     SDL_SetRenderDrawColor($renderer, 55,55,65,255);
     SDL_RenderFillRect($renderer, $ffi->cast('string'=>'opaque',$top_rect));
-
-    # Рамка вокруг верхней панели
     SDL_SetRenderDrawColor($renderer, 100,100,120,255);
     SDL_RenderDrawRect($renderer, $ffi->cast('string'=>'opaque',$top_rect));
 
-    sub draw_button {
-        my ($x, $y, $w, $h, $label, $bg_r, $bg_g, $bg_b) = @_;
-        $bg_r //= 70; $bg_g //= 70; $bg_b //= 160;
-        my $r = pack('iiii', $x, $y, $w, $h);
-        SDL_SetRenderDrawColor($renderer, $bg_r, $bg_g, $bg_b, 255);
-        SDL_RenderFillRect($renderer, $ffi->cast('string'=>'opaque', $r));
-        SDL_SetRenderDrawColor($renderer, 200,200,255,255);
-        SDL_RenderDrawRect($renderer, $ffi->cast('string'=>'opaque', $r));
-        my $surf = TTF_RenderUTF8_Solid($font16, $label, $white_color_ptr);
-        if ($surf) {
-            my $t = SDL_CreateTextureFromSurface($renderer, $surf);
-            my $dst = pack('iiii', $x+4, $y+4, $w-8, $h-8);
-            SDL_RenderCopy($renderer, $t, undef, $ffi->cast('string'=>'opaque', $dst));
-            SDL_DestroyTexture($t);
-            SDL_FreeSurface($surf);
+    # Кнопки-картинки
+    my $by = $BTN_TOP;
+    SDL_RenderCopy($renderer, $btn_apply_tex,     undef, $ffi->cast('string'=>'opaque', pack('iiii', $btn1_x, $by, 52, $BTN_H)));
+    SDL_RenderCopy($renderer, $btn_load_tex,      undef, $ffi->cast('string'=>'opaque', pack('iiii', $btn2_x, $by, 40, $BTN_H)));
+    SDL_RenderCopy($renderer, $btn_save_tex,      undef, $ffi->cast('string'=>'opaque', pack('iiii', $btn3_x, $by, 40, $BTN_H)));
+    SDL_RenderCopy($renderer, $btn_tiles_tex,     undef, $ffi->cast('string'=>'opaque', pack('iiii', $btn4_x, $by, 40, $BTN_H)));
+    SDL_RenderCopy($renderer, $btn_collision_tex, undef, $ffi->cast('string'=>'opaque', pack('iiii', $btn5_x, $by, 60, $BTN_H)));
+    SDL_RenderCopy($renderer, $btn_select_tex,    undef, $ffi->cast('string'=>'opaque', pack('iiii', $btn6_x, $by, 46, $BTN_H)));
+
+    # Эффект нажатия: затемнение кнопки при зажатой ЛКМ
+    if ($mouse_button == 1) {
+        my ($bx, $bw) = (-1, 0);
+        if ($mouse_y >= $BTN_TOP && $mouse_y <= $BTN_TOP + $BTN_H) {
+            if ($mouse_x >= $btn1_x && $mouse_x <= $btn1_x + 52)      { ($bx, $bw) = ($btn1_x, 52); }
+            elsif ($mouse_x >= $btn2_x && $mouse_x <= $btn2_x + 40)   { ($bx, $bw) = ($btn2_x, 40); }
+            elsif ($mouse_x >= $btn3_x && $mouse_x <= $btn3_x + 40)   { ($bx, $bw) = ($btn3_x, 40); }
+            elsif ($mouse_x >= $btn4_x && $mouse_x <= $btn4_x + 40)   { ($bx, $bw) = ($btn4_x, 40); }
+            elsif ($mouse_x >= $btn5_x && $mouse_x <= $btn5_x + 60)   { ($bx, $bw) = ($btn5_x, 60); }
+            elsif ($mouse_x >= $btn6_x && $mouse_x <= $btn6_x + 46)   { ($bx, $bw) = ($btn6_x, 46); }
+        }
+        if ($bx != -1) {
+            SDL_SetRenderDrawBlendMode($renderer, 1);
+            SDL_SetRenderDrawColor($renderer, 0, 0, 0, 80);
+            my $press_rect = pack('iiii', $bx, $BTN_TOP, $bw, $BTN_H);
+            SDL_RenderFillRect($renderer, $ffi->cast('string'=>'opaque', $press_rect));
+            SDL_SetRenderDrawBlendMode($renderer, 0);
         }
     }
 
-    # Кнопки
-    draw_button(20,30,70,30,"Apply", 60,60,150);
-    draw_button(100,30,70,30,"Load", 60,60,150);
-    draw_button(180,30,70,30, $save_flash ? "Save" : "Save", $save_flash ? (255,215,0) : (60,60,150));
-
-    # Подписи к полям
-    my $lbl_w = TTF_RenderUTF8_Solid($font12, "W:", $white_color_ptr);
-    if ($lbl_w) {
-        my $t = SDL_CreateTextureFromSurface($renderer, $lbl_w);
-        SDL_RenderCopy($renderer, $t, undef, $ffi->cast('string'=>'opaque', pack('iiii', 260,35,20,20)));
-        SDL_DestroyTexture($t);
-        SDL_FreeSurface($lbl_w);
+    # Подсветка активных режимов
+    if (!$edit_mode) {
+        SDL_SetRenderDrawColor($renderer, 100, 255, 100, 255);
+        my $r = pack('iiii', $btn4_x-2, $BTN_TOP-2, 44, $BTN_H+4);
+        SDL_RenderDrawRect($renderer, $ffi->cast('string'=>'opaque', $r));
     }
-    my $lbl_h = TTF_RenderUTF8_Solid($font12, "H:", $white_color_ptr);
-    if ($lbl_h) {
-        my $t = SDL_CreateTextureFromSurface($renderer, $lbl_h);
-        SDL_RenderCopy($renderer, $t, undef, $ffi->cast('string'=>'opaque', pack('iiii', 330,35,20,20)));
-        SDL_DestroyTexture($t);
-        SDL_FreeSurface($lbl_h);
+    if ($edit_mode) {
+        SDL_SetRenderDrawColor($renderer, 255, 100, 100, 255);
+        my $r = pack('iiii', $btn5_x-2, $BTN_TOP-2, 64, $BTN_H+4);
+        SDL_RenderDrawRect($renderer, $ffi->cast('string'=>'opaque', $r));
+    }
+    if ($selection->{active}) {
+        SDL_SetRenderDrawColor($renderer, 100, 255, 100, 255);
+        my $r = pack('iiii', $btn6_x-2, $BTN_TOP-2, 50, $BTN_H+4);
+        SDL_RenderDrawRect($renderer, $ffi->cast('string'=>'opaque', $r));
     }
 
-    # Поле W
-    my $fw = 40; my $fh = 26;
-    my $rect_w = pack('iiii', 280,31,$fw,$fh);
-    SDL_SetRenderDrawColor($renderer, 200,200,200,255);
-    SDL_RenderFillRect($renderer, $ffi->cast('string'=>'opaque',$rect_w));
+    my $fw = 64; my $fh = 34;
+    my $fields_y = 54;          # чуть выше, ровно под кнопками
+
+    # Подписи W: и H: (теперь PNG-файлы W.png и H.png)
+    if ($label_w_tex) {
+        SDL_RenderCopy($renderer, $label_w_tex, undef,
+            $ffi->cast('string'=>'opaque', pack('iiii', 380, $fields_y, 20, 20)));
+    }
+    if ($label_h_tex) {
+        SDL_RenderCopy($renderer, $label_h_tex, undef,
+            $ffi->cast('string'=>'opaque', pack('iiii', 470, $fields_y, 20, 20)));
+    }
+
+    # Поле W (фон input.png + символы)
+    my $rect_w = pack('iiii', 400, $fields_y, $fw, $fh);
+    SDL_RenderCopy($renderer, $input_field_tex, undef, $ffi->cast('string'=>'opaque', $rect_w));
     if ($active_field == 1) {
         SDL_SetRenderDrawColor($renderer, 0,200,0,255);
         SDL_RenderDrawRect($renderer, $ffi->cast('string'=>'opaque',$rect_w));
     }
-    my $surf_w = TTF_RenderUTF8_Solid($font16, $input_w, $ffi->cast('string'=>'opaque', pack('CCCC',0,0,0,255)));
-    if ($surf_w) {
-        my $t = SDL_CreateTextureFromSurface($renderer, $surf_w);
-        SDL_RenderCopy($renderer, $t, undef, $ffi->cast('string'=>'opaque', pack('iiii', 282,33,$fw-4,$fh-4)));
-        SDL_DestroyTexture($t);
-        SDL_FreeSurface($surf_w);
+    {
+        my $str = $input_w;
+        $str = " " if $str eq "";
+        my @chars = split //, $str;
+        my $sx = 402;
+        for my $ch (@chars) {
+            draw_symbol($ch, $sx, $fields_y + 1);
+            $sx += 20;
+        }
     }
 
-    # Поле H
-    my $rect_h = pack('iiii', 350,31,$fw,$fh);
-    SDL_SetRenderDrawColor($renderer, 200,200,200,255);
-    SDL_RenderFillRect($renderer, $ffi->cast('string'=>'opaque',$rect_h));
+    # Поле H (фон input.png + символы)
+    my $rect_h = pack('iiii', 490, $fields_y, $fw, $fh);
+    SDL_RenderCopy($renderer, $input_field_tex, undef, $ffi->cast('string'=>'opaque', $rect_h));
     if ($active_field == 2) {
         SDL_SetRenderDrawColor($renderer, 0,200,0,255);
         SDL_RenderDrawRect($renderer, $ffi->cast('string'=>'opaque',$rect_h));
     }
-    my $surf_h = TTF_RenderUTF8_Solid($font16, $input_h, $ffi->cast('string'=>'opaque', pack('CCCC',0,0,0,255)));
-    if ($surf_h) {
-        my $t = SDL_CreateTextureFromSurface($renderer, $surf_h);
-        SDL_RenderCopy($renderer, $t, undef, $ffi->cast('string'=>'opaque', pack('iiii', 352,33,$fw-4,$fh-4)));
-        SDL_DestroyTexture($t);
-        SDL_FreeSurface($surf_h);
+    {
+        my $str = $input_h;
+        $str = " " if $str eq "";
+        my @chars = split //, $str;
+        my $sx = 492;
+        for my $ch (@chars) {
+            draw_symbol($ch, $sx, $fields_y + 1);
+            $sx += 20;
+        }
     }
-
-    draw_button(410,30,70,30, $edit_mode ? "Collision" : "Tiles", $edit_mode ? (200,80,80) : (60,60,150));
-    draw_button(490,30,70,30, $selection->{active} ? "Select" : "Select", $selection->{active} ? (0,180,0) : (60,60,150));
 
     # ---------- ПАЛИТРА ----------
     my $pal_y0 = $TOP_BAR_H;
@@ -861,7 +990,7 @@ while ($running) {
         SDL_RenderFillRect($renderer, $ffi->cast('string'=>'opaque', $pthumb));
     }
 
-    # ----- Область карты (чёрный фон) -----
+    # ----- Область карты -----
     my $map_bg = pack('iiii', $tile_area_x, $tile_area_y, $MAP_VIEW_W, $MAP_VIEW_H);
     SDL_SetRenderDrawColor($renderer, 0,0,0,255);
     SDL_RenderFillRect($renderer, $ffi->cast('string'=>'opaque', $map_bg));
@@ -869,7 +998,6 @@ while ($running) {
     my $tw = $PAL_TILE_W;
     my $th = $PAL_TILE_H;
 
-    # Фон тайловой области
     if ($edit_mode) {
         my $c0_bg = int($map_scroll_x / $tw);
         my $r0_bg = int($map_scroll_y / $th);
@@ -967,7 +1095,7 @@ while ($running) {
     SDL_SetRenderDrawColor($renderer,150,150,150,255);
     SDL_RenderFillRect($renderer, $ffi->cast('string'=>'opaque',$vthumb));
 
-    # Отрисовка выделения
+    # Выделение
     $selection->render($renderer, $tile_area_x, $tile_area_y, $tw, $th,
                        0, $TOP_BAR_H, $PAL_TILE_W, $PAL_TILE_H, $pal_scroll_y);
 
@@ -986,6 +1114,20 @@ TTF_Quit();
 free($src_rect);
 free($dst_rect);
 free($event_ptr);
+
+SDL_DestroyTexture($btn_apply_tex)     if $btn_apply_tex;
+SDL_DestroyTexture($btn_load_tex)      if $btn_load_tex;
+SDL_DestroyTexture($btn_save_tex)      if $btn_save_tex;
+SDL_DestroyTexture($btn_tiles_tex)     if $btn_tiles_tex;
+SDL_DestroyTexture($btn_collision_tex) if $btn_collision_tex;
+SDL_DestroyTexture($btn_select_tex)    if $btn_select_tex;
+SDL_DestroyTexture($input_field_tex) if $input_field_tex;
+foreach my $tex (@symbol_tex) {
+    SDL_DestroyTexture($tex) if $tex;
+}
+SDL_DestroyTexture($label_w_tex) if $label_w_tex;
+SDL_DestroyTexture($label_h_tex) if $label_h_tex;
+
 SDL_DestroyRenderer($renderer);
 SDL_DestroyWindow($window);
 SDL_Quit();

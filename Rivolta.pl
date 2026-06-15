@@ -607,7 +607,7 @@ while ($running) {
         for my $col ($start_col .. $end_col) {
             next if $col < 0 || $col >= $map_cols;
             my $id = $map[$row][$col];
-            next if $id <= 0;
+            next if $id < 0;
 
             my ($sx, $sy) = tile_src($id);
             my $src_pack = pack('iiii', $sx, $sy, $TILE_SIZE, $TILE_SIZE);

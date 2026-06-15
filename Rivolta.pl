@@ -233,18 +233,21 @@ my $player = Player->new(
 );
 
 my $camera = Camera->new(
-    map_width   => $map_cols * $TILE_SIZE,        # 45*48 = 2160
-    map_height  => $map_rows * $TILE_SIZE,        # 18*48 = 864
-    view_width  => $WIN_W,                        # 800
-    view_height => $WIN_H,                        # 600
+    map_width   => $map_cols * $TILE_SIZE,
+    map_height  => $map_rows * $TILE_SIZE,
+    view_width  => $WIN_W,
+    view_height => $WIN_H,
     margin_x    => 0,
     margin_y    => 0,
-    dead_zone_x => 0,             # отключаем мёртвую зону – камера всегда точно за игроком
+    dead_zone_x => 0,
     dead_zone_y => 0,
-    speed       => 6,             # скорость как у игрока – без рывков
-    fast_speed  => 6,             # без ускорения
-    speedup_threshold => 999,     # чтобы не включался ускоренный режим
+    speed       => 6,
+    fast_speed  => 6,
+    speedup_threshold => 999,
 );
+
+$camera->{y} = -$MAP_Y;
+$camera->{target_y} = -$MAP_Y;
 
 
 my $rain = Rain->new( max_drops => 200, length => 26, speed => 9, angle => 25 );
@@ -535,9 +538,21 @@ while ($running) {
     }
 
     # Проверяем, выходит ли игрок за мёртвую зону
-    if ($camera->_out_of_dead_zone($px, $py)) {
-        $camera->set_target($px, $py);
-    }
+
+    my $target_x = $px - $WIN_W / 2;
+    my $target_y = $py - $WIN_H / 2;
+
+    $target_x = 0 if $target_x < 0;
+    my $max_x = $map_cols * $TILE_SIZE - $WIN_W;
+    $target_x = $max_x if $target_x > $max_x;
+
+    $target_y = -$MAP_Y if $target_y < -$MAP_Y;
+    my $max_y = $map_rows * $TILE_SIZE - $WIN_H;
+    $target_y = $max_y if $target_y > $max_y;
+
+    $camera->{target_x} = $target_x;
+    $camera->{target_y} = $target_y;
+
     $camera->update();
     my $cam_x = $camera->x;
     my $cam_y = $camera->y;
@@ -604,16 +619,6 @@ while ($running) {
 
             SDL_RenderCopy($renderer, $tileset_tex, $src_rect, $dst_rect);
         }
-    }
-
-    # Чёрная полоса 24px ТОЛЬКО когда камера у самого верха карты
-    if ($cam_y == 0) {
-        my $rect = pack('iiii', 0, 0, $WIN_W, $MAP_Y);
-        my $ptr = malloc(16);
-        memcpy($ptr, $ffi->cast('string'=>'opaque', $rect), 16);
-        SDL_SetRenderDrawColor($renderer, 0, 0, 0, 255);
-        SDL_RenderFillRect($renderer, $ptr);
-        free($ptr);
     }
 
 	$player->draw();

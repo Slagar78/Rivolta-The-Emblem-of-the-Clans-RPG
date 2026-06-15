@@ -241,8 +241,8 @@ my $camera = Camera->new(
     margin_y    => 0,
     dead_zone_x => 0,
     dead_zone_y => 0,
-    speed       => 6,
-    fast_speed  => 6,
+    speed       => 7,
+    fast_speed  => 7,
     speedup_threshold => 999,
 );
 

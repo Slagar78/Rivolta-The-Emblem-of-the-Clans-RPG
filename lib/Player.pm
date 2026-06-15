@@ -11,7 +11,7 @@ sub new {
         frame_w    => 48,
         frame_h    => 48,
         direction  => $args{direction} // 'down',
-        speed      => 6,                     # пикселей за кадр при движении к тайлу
+        speed      => 7,                     # пикселей за кадр при движении к тайлу
         anim_timer => 0,
         anim_frame => 1,                     # стоячий кадр
         idle_timer => 0,

@@ -73,8 +73,8 @@ my $WIN_W = 800; my $WIN_H = 600;
 my $COLS = 16; my $ROWS = 12;
 my $MAP_W = $COLS * $TILE_SIZE;   # 768
 my $MAP_H = $ROWS * $TILE_SIZE;   # 576
-my $MAP_X = ($WIN_W - $MAP_W) / 2; # 16
-my $MAP_Y = 18;
+my $MAP_X = 0;
+my $MAP_Y = 24;
 
 die "SDL_Init: " . SDL_GetError() if SDL_Init(0x00000020) != 0;
 die "IMG_Init: " . SDL_GetError() unless IMG_Init(2) & 2;
@@ -222,27 +222,30 @@ sub tile_src {
 my $player = Player->new(
     draw_cb      => $draw_sprite,
     texture      => $sprite_tex,
-    x            => 2 * $TILE_SIZE,   # без MAP_X
-    y            => 9 * $TILE_SIZE,   # без MAP_Y
+    x            => 2 * $TILE_SIZE,       # 96
+    y            => 9 * $TILE_SIZE,       # 432
     direction    => 'down',
     map_cols     => $map_cols,
     map_rows     => $map_rows,
-    map_offset_x => $MAP_X,
-    map_offset_y => $MAP_Y,
-	tile_size    => $TILE_SIZE,
+    map_offset_x => 0,                    # не сдвигаем игрока
+    map_offset_y => 0,
+    tile_size    => $TILE_SIZE,
 );
 
 my $camera = Camera->new(
-    map_width   => $map_cols * $TILE_SIZE,
-    map_height  => $map_rows * $TILE_SIZE,
-    view_width  => $WIN_W,
-    view_height => $WIN_H,
+    map_width   => $map_cols * $TILE_SIZE,        # 45*48 = 2160
+    map_height  => $map_rows * $TILE_SIZE,        # 18*48 = 864
+    view_width  => $WIN_W,                        # 800
+    view_height => $WIN_H,                        # 600
     margin_x    => 0,
-    margin_y    => $MAP_Y,          # верхний отступ для рамки (18)
-    speed       => 4,
-    fast_speed  => 6,
-    speedup_threshold => 6,
+    margin_y    => 0,
+    dead_zone_x => 0,             # отключаем мёртвую зону – камера всегда точно за игроком
+    dead_zone_y => 0,
+    speed       => 6,             # скорость как у игрока – без рывков
+    fast_speed  => 6,             # без ускорения
+    speedup_threshold => 999,     # чтобы не включался ускоренный режим
 );
+
 
 my $rain = Rain->new( max_drops => 200, length => 26, speed => 9, angle => 25 );
 
@@ -539,7 +542,7 @@ while ($running) {
     my $cam_x = $camera->x;
     my $cam_y = $camera->y;
 
-    $player->set_camera_offset(-$cam_x, -$cam_y);
+    $player->set_camera_offset($MAP_X - $cam_x, -$cam_y);
 			
 	if ($rain_active) {
     $rain->update($TILE_SIZE, $map_cols * $TILE_SIZE, $map_rows * $TILE_SIZE, $cam_x, $cam_y);
@@ -549,7 +552,7 @@ while ($running) {
     SDL_SetRenderDrawColor($renderer, 0,0,0,255);
     SDL_RenderClear($renderer);
 
-    # Шахматный фон
+    # Шахматный фон (только внутри карты, на пустых тайлах)
     if ($alpha_tex) {
         my $src_alpha = pack('iiii', 0, 0, $TILE_SIZE, $TILE_SIZE);
         my $src_tmp   = malloc(16);
@@ -561,9 +564,13 @@ while ($running) {
         my $end_row   = int(($cam_y + $WIN_H) / $TILE_SIZE);
 
         for my $row ($start_row .. $end_row) {
+            next if $row < 0 || $row >= $map_rows;
             for my $col ($start_col .. $end_col) {
-                my $dx = ($col * $TILE_SIZE) - $cam_x;
-				my $dy = ($row * $TILE_SIZE) - $cam_y;
+                next if $col < 0 || $col >= $map_cols;
+                next if $map[$row][$col] != 0;
+
+                my $dx = ($col * $TILE_SIZE) - $cam_x + $MAP_X;
+                my $dy = ($row * $TILE_SIZE) - $cam_y;          # БЕЗ +$MAP_Y
                 my $dst_alpha = pack('iiii', $dx, $dy, $TILE_SIZE, $TILE_SIZE);
                 my $dst_tmp   = malloc(16);
                 memcpy($dst_tmp, $ffi->cast('string' => 'opaque', $dst_alpha), 16);
@@ -590,8 +597,8 @@ while ($running) {
             my ($sx, $sy) = tile_src($id);
             my $src_pack = pack('iiii', $sx, $sy, $TILE_SIZE, $TILE_SIZE);
             memcpy($src_rect, $ffi->cast('string' => 'opaque', $src_pack), 16);
-			my $dx = ($col * $TILE_SIZE) - $cam_x;
-			my $dy = ($row * $TILE_SIZE) - $cam_y;
+            my $dx = ($col * $TILE_SIZE) - $cam_x + $MAP_X;
+            my $dy = ($row * $TILE_SIZE) - $cam_y;              # БЕЗ +$MAP_Y
             my $dst_pack = pack('iiii', $dx, $dy, $TILE_SIZE, $TILE_SIZE);
             memcpy($dst_rect, $ffi->cast('string' => 'opaque', $dst_pack), 16);
 
@@ -599,19 +606,15 @@ while ($running) {
         }
     }
 
-    SDL_SetRenderDrawColor($renderer, 0, 0, 0, 255);
-
-    my $rect = pack('iiii', 0, 0, $WIN_W, $MAP_Y);
-    my $ptr = malloc(16);
-    memcpy($ptr, $ffi->cast('string'=>'opaque', $rect), 16);
-    SDL_RenderFillRect($renderer, $ptr);
-    free($ptr);
-
-    $rect = pack('iiii', 0, $WIN_H - 6, $WIN_W, 6);
-    $ptr = malloc(16);
-    memcpy($ptr, $ffi->cast('string'=>'opaque', $rect), 16);
-    SDL_RenderFillRect($renderer, $ptr);
-    free($ptr);
+    # Чёрная полоса 24px ТОЛЬКО когда камера у самого верха карты
+    if ($cam_y == 0) {
+        my $rect = pack('iiii', 0, 0, $WIN_W, $MAP_Y);
+        my $ptr = malloc(16);
+        memcpy($ptr, $ffi->cast('string'=>'opaque', $rect), 16);
+        SDL_SetRenderDrawColor($renderer, 0, 0, 0, 255);
+        SDL_RenderFillRect($renderer, $ptr);
+        free($ptr);
+    }
 
 	$player->draw();
     if ($rain_active) {

@@ -230,6 +230,7 @@ my $player = Player->new(
     map_offset_x => 0,                    # не сдвигаем игрока
     map_offset_y => 0,
     tile_size    => $TILE_SIZE,
+	collision    => \@collision,
 );
 
 my $camera = Camera->new(

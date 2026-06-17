@@ -128,6 +128,7 @@ $ffi->attach( SDL_GetModState        => []                           => 'uint' )
 $ffi->attach( SDL_SetRenderDrawBlendMode => ['opaque', 'int']       => 'int' );
 $ffi->attach( SDL_SetTextureColorMod => ['opaque', 'uint8', 'uint8', 'uint8'] => 'int' );
 $ffi->attach( SDL_SetTextureBlendMode => ['opaque', 'int'] => 'int' );
+$ffi->attach( SDL_SetTextureAlphaMod => ['opaque', 'uint8'] => 'int' );
 
 $ffi->attach( IMG_Load                => ['string']                  => 'opaque' );
 $ffi->attach( IMG_Init                => ['int']                     => 'int' );
@@ -850,7 +851,7 @@ while ($running) {
                     paint_map_cell($mouse_x, $mouse_y, $tid);
                 } else {
                     if ($mouse_button == 1) { set_collision_cell($mouse_x, $mouse_y, 0); }
-                    elsif ($mouse_button == 3) { set_collision_cell($mouse_x, $mouse_y, 1); }
+                    elsif ($mouse_button == 3) { set_collision_cell($mouse_x, $mouse_y, -1); }
                 }
             }
         }
@@ -994,7 +995,7 @@ while ($running) {
                         if ($tid>=0) { paint_map_cell($cx, $cy, $tid); }
                     } else {
                         if ($btn == 1) { set_collision_cell($cx, $cy, 0); }
-                        elsif ($btn == 3) { set_collision_cell($cx, $cy, 1); }
+                        elsif ($btn == 3) { set_collision_cell($cx, $cy, -1); }
                     }
                 }
             }
@@ -1080,7 +1081,7 @@ while ($running) {
             paint_map_cell($mouse_x, $mouse_y, $tid);
         } else {
             if ($mouse_button == 1) { set_collision_cell($mouse_x, $mouse_y, 0); }
-            elsif ($mouse_button == 3) { set_collision_cell($mouse_x, $mouse_y, 1); }
+            elsif ($mouse_button == 3) { set_collision_cell($mouse_x, $mouse_y, -1); }
         }
     }
 
@@ -1299,23 +1300,39 @@ while ($running) {
     my $th = $PAL_TILE_H;
 
     if ($edit_mode) {
+        # ----- РЕЖИМ КОЛЛИЗИИ: полупрозрачные тайлы + сетка -----
         my $c0_bg = int($map_scroll_x / $tw);
         my $r0_bg = int($map_scroll_y / $th);
         my $c1_bg = int(($map_scroll_x + $TILE_AREA_W - 1) / $tw);
         my $r1_bg = int(($map_scroll_y + $TILE_AREA_H - 1) / $th);
         $c1_bg = $MAP_COLS - 1 if $c1_bg >= $MAP_COLS;
         $r1_bg = $MAP_ROWS - 1 if $r1_bg >= $MAP_ROWS;
+
         for my $row ($r0_bg .. $r1_bg) {
             for my $col ($c0_bg .. $c1_bg) {
+                my $id = $map[$row][$col];
                 my $dx = $tile_area_x + $col * $tw - $map_scroll_x;
                 my $dy = $tile_area_y + $row * $th - $map_scroll_y;
-                my $color = (($row + $col) % 2 == 0) ? 180 : 140;
-                my $cell = pack('iiii', $dx, $dy, $tw, $th);
-                SDL_SetRenderDrawColor($renderer, $color, $color, $color, 255);
-                SDL_RenderFillRect($renderer, $ffi->cast('string'=>'opaque', $cell));
+                my $dst_pack = pack('iiii', $dx, $dy, $tw, $th);
+                memcpy($dst_rect, $ffi->cast('string'=>'opaque', $dst_pack), 16);
+
+                # 1. Рисуем тайл полупрозрачно (если есть)
+                if ($tileset_tex && $id > 0) {
+                    my ($sx, $sy) = tile_src($id);
+                    my $src_pack = pack('iiii', $sx, $sy, $TILE_SIZE, $TILE_SIZE);
+                    memcpy($src_rect, $ffi->cast('string'=>'opaque', $src_pack), 16);
+                    SDL_SetTextureAlphaMod($tileset_tex, 150);   # прозрачность 150 из 255
+                    SDL_RenderCopy($renderer, $tileset_tex, $src_rect, $dst_rect);
+                    SDL_SetTextureAlphaMod($tileset_tex, 255);   # возвращаем непрозрачность
+                }
+
+                # 2. Сетка (тонкая рамка вокруг клетки)
+                SDL_SetRenderDrawColor($renderer, 100, 100, 100, 200);
+                SDL_RenderDrawRect($renderer, $dst_rect);
             }
         }
     } else {
+        # ----- ОБЫЧНЫЙ РЕЖИМ: рисуем фон и тайлы (как было) -----
         my $tile_area_rect = pack('iiii', $tile_area_x, $tile_area_y, $TILE_AREA_W, $TILE_AREA_H);
         SDL_SetRenderDrawColor($renderer, 25, 25, 70, 255);
         SDL_RenderFillRect($renderer, $ffi->cast('string'=>'opaque', $tile_area_rect));
@@ -1347,7 +1364,7 @@ while ($running) {
                 }
             }
 
-            if ($collision[$row][$col] == 1) {
+            if ($collision[$row][$col] == -1) {
                 SDL_SetRenderDrawColor($renderer, 255, 0, 0, 220);
                 SDL_RenderDrawLine($renderer, $dx+2, $dy+2, $dx+$tw-2, $dy+$th-2);
                 SDL_RenderDrawLine($renderer, $dx+$tw-2, $dy+2, $dx+2, $dy+$th-2);

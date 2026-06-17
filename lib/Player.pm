@@ -28,6 +28,9 @@ sub new {
         pixel_offset => 0,
         target_tile_x => undef,
         target_tile_y => undef,
+
+        # --- ДОБАВЛЕНО: ссылка на массив коллизий ---
+        collision  => $args{collision} // [],
     };
     bless $self, $class;
 
@@ -67,6 +70,20 @@ sub update {
                 my $new_tile_y = $self->{tile_y} + $dy;
                 if ($new_tile_x >= 0 && $new_tile_x < $self->{map_cols} &&
                     $new_tile_y >= 0 && $new_tile_y < $self->{map_rows}) {
+
+                    # --- ПРОВЕРКА КОЛЛИЗИИ ---
+                    my $col = $self->{collision}[$new_tile_y][$new_tile_x];
+                    if (defined $col && $col == -1) {
+                        # Непроходимый тайл – останавливаемся
+                        $self->{moving} = 0;
+                        $self->{anim_frame} = 1;   # стоячий кадр
+                        $self->{idle_timer} = 0;
+                        $self->{target_tile_x} = undef;
+                        $self->{target_tile_y} = undef;
+                        $self->{pixel_offset} = 0;
+                        return;
+                    }
+
                     # Начинаем следующий шаг без разрыва анимации
                     $self->{target_tile_x} = $new_tile_x;
                     $self->{target_tile_y} = $new_tile_y;
@@ -133,6 +150,13 @@ sub update {
     my $new_tile_y = $self->{tile_y} + $dy;
     if ($new_tile_x >= 0 && $new_tile_x < $self->{map_cols} &&
         $new_tile_y >= 0 && $new_tile_y < $self->{map_rows}) {
+
+        # --- ПРОВЕРКА КОЛЛИЗИИ ---
+        my $col = $self->{collision}[$new_tile_y][$new_tile_x];
+        if (defined $col && $col == -1) {
+            return;   # тайл непроходим, движение невозможно
+        }
+
         $self->{target_tile_x} = $new_tile_x;
         $self->{target_tile_y} = $new_tile_y;
         $self->{moving} = 1;

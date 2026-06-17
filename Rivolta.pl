@@ -10,6 +10,7 @@ use FFI::Platypus;
 use FFI::Platypus::Memory qw(malloc free memcpy);
 use Player;
 use Menu;
+use StatusMenu;
 use Camera;
 use Rain;
 use Intro;
@@ -45,7 +46,7 @@ $ffi->attach( SDL_SetRenderDrawBlendMode => ['opaque','int'] => 'int' );
 $ffi->attach( SDL_SetTextureColorMod => ['opaque','uint8','uint8','uint8'] => 'int' );
 $ffi->attach( IMG_Load               => ['string'] => 'opaque' );
 $ffi->attach( IMG_Init               => ['int']    => 'int' );
-$ffi->attach( SDL_GetKeyboardState   => ['opaque'] => 'opaque' );   # не понадобится, но оставим
+$ffi->attach( SDL_GetKeyboardState   => ['opaque'] => 'opaque' );
 
 $ffi->attach( Mix_OpenAudio  => ['int','uint16','int','int'] => 'int' );
 $ffi->attach( Mix_LoadMUS    => ['string']                   => 'opaque' );
@@ -66,13 +67,12 @@ $ffi->attach( SDL_GetTicks          => []                => 'uint32' );
 $ffi->attach( SDL_SetTextureAlphaMod => ['opaque','uint8'] => 'int' );
 $ffi->attach( SDL_RenderFillRect => ['opaque','opaque'] => 'int' );
 
-
 # Параметры окна и тайлов
 my $TILE_SIZE = 48;
 my $WIN_W = 800; my $WIN_H = 600;
 my $COLS = 16; my $ROWS = 12;
-my $MAP_W = $COLS * $TILE_SIZE;   # 768
-my $MAP_H = $ROWS * $TILE_SIZE;   # 576
+my $MAP_W = $COLS * $TILE_SIZE;
+my $MAP_H = $ROWS * $TILE_SIZE;
 my $MAP_X = 0;
 my $MAP_Y = 24;
 
@@ -80,11 +80,9 @@ die "SDL_Init: " . SDL_GetError() if SDL_Init(0x00000020) != 0;
 die "IMG_Init: " . SDL_GetError() unless IMG_Init(2) & 2;
 die "Mix_OpenAudio: " . SDL_GetError() if Mix_OpenAudio(44100, 0x8010, 2, 2048) != 0;
 
-# Создаём окно и рендерер ДО шрифта
 my $window   = SDL_CreateWindow("Rivolta: The Emblem of the Clans", 100, 100, $WIN_W, $WIN_H, 0x00000004);
 my $renderer = SDL_CreateRenderer($window, -1, 0x0000000A);
 die "Renderer: " . SDL_GetError() unless $renderer;
-
 
 # --- Тайлсет (основной) ---
 my $tileset_path = 'assets/tileset/tileset.png';
@@ -119,8 +117,7 @@ my $logo_tex = SDL_CreateTextureFromSurface($renderer, $logo_surf);
 SDL_FreeSurface($logo_surf);
 SDL_SetTextureBlendMode($logo_tex, 0x00000001);
 
-
-# Загрузка
+# Загрузка буквенных текстур
 my %letter_tex;
 my $LETTER_W = 20;
 my $LETTER_H = 32;
@@ -151,7 +148,6 @@ for my $i (0..25) {
     $letter_tex{$char} = $tex;
 }
 
-
 # --- Функция отрисовки спрайта ---
 my $draw_sprite = sub {
     my ($tex, $x, $y, $src_x, $src_y, $w, $h) = @_;
@@ -179,8 +175,8 @@ my $maplist_raw = do { local $/; open my $fh, '<', $maplist_path; <$fh> };
 my $maplist = from_toml($maplist_raw);
 my $selected_map = $maplist->{maps}[0] or die "No maps in maplist";
 
-my $map_folder   = $selected_map->{folder};           # например "map01"
-my $music_path   = $selected_map->{music};            # путь к музыке
+my $map_folder   = $selected_map->{folder};
+my $music_path   = $selected_map->{music};
 my $layout_path  = "data/map/$map_folder/layout.toml";
 die "Layout not found: $layout_path" unless -f $layout_path;
 
@@ -198,11 +194,9 @@ for my $r (0 .. $map_rows - 1) {
     my $coll_row = $layout->{collision}{sprintf("row%02d", $r)} // '';
     push @map, [split /\s+/, $tile_row];
     push @collision, [split /\s+/, $coll_row];
-    # дополнить нулями до нужной ширины
     while (@{$map[-1]} < $map_cols) { push @{$map[-1]}, 0; }
     while (@{$collision[-1]} < $map_cols) { push @{$collision[-1]}, 0; }
 }
-
 
 sub tile_src {
     my ($id) = @_;
@@ -222,15 +216,15 @@ sub tile_src {
 my $player = Player->new(
     draw_cb      => $draw_sprite,
     texture      => $sprite_tex,
-    x            => 2 * $TILE_SIZE,       # 96
-    y            => 9 * $TILE_SIZE,       # 432
+    x            => 2 * $TILE_SIZE,
+    y            => 9 * $TILE_SIZE,
     direction    => 'down',
     map_cols     => $map_cols,
     map_rows     => $map_rows,
-    map_offset_x => 0,                    # не сдвигаем игрока
+    map_offset_x => 0,
     map_offset_y => 0,
     tile_size    => $TILE_SIZE,
-	collision    => \@collision,
+    collision    => \@collision,
 );
 
 my $camera = Camera->new(
@@ -250,16 +244,15 @@ my $camera = Camera->new(
 $camera->{y} = -$MAP_Y;
 $camera->{target_y} = -$MAP_Y;
 
-
 my $rain = Rain->new( max_drops => 200, length => 26, speed => 9, angle => 25 );
 
-# Управление дождём по реальному времени
-my $rain_scheduled = 0;       # запланирован ли дождь в текущем часе
-my $rain_active    = 0;       # идёт ли дождь сейчас
+# Управление дождём
+my $rain_scheduled = 0;
+my $rain_active    = 0;
 my $rain_start_time = 0;
 my $rain_end_time   = 0;
-my $rain_minute     = 0;      # минута запуска
-my $last_rain_hour  = -1;     # час, для которого уже сгенерирована минута
+my $rain_minute     = 0;
+my $last_rain_hour  = -1;
 
 # --- Меню 4 кнопки ---
 my @button_textures;
@@ -269,11 +262,11 @@ for my $i (1..4) {
     my $surf = IMG_Load($path) or die "IMG_Load button $i: " . SDL_GetError();
     my $tex  = SDL_CreateTextureFromSurface($renderer, $surf);
     SDL_FreeSurface($surf);
-    SDL_SetTextureBlendMode($tex, 0x00000001);   # прозрачность
+    SDL_SetTextureBlendMode($tex, 0x00000001);
     push @button_textures, $tex;
 }
 
-# --- Панель с названиями (Label_panel.png) ---
+# --- Панель с названиями ---
 my $label_panel_tex = undef;
 my $label_path = 'assets/buttons/Label_panel.png';
 if (-f $label_path) {
@@ -286,27 +279,22 @@ if (-f $label_path) {
 my $draw_sprite_flip = sub {
     my ($tex, $x, $y, $src_x, $src_y, $w, $h, $scale_x, $flip) = @_;
     my $src_pack = pack('iiii', $src_x, $src_y, $w, $h);
-    # ширина меняется, высота постоянна
     my $dst_w = $w * $scale_x;
     my $dst_h = $h;
-    # центрируем по горизонтали
     my $dst_x = $x + ($w - $dst_w)/2;
     my $dst_y = $y;
     my $dst_pack = pack('iiii', $dst_x, $dst_y, $dst_w, $dst_h);
     my $src_rect = malloc(16); memcpy($src_rect, $ffi->cast('string'=>'opaque', $src_pack), 16);
     my $dst_rect = malloc(16); memcpy($dst_rect, $ffi->cast('string'=>'opaque', $dst_pack), 16);
-    my $center = pack('ii', 0, 0);   # центр не важен при флипе
+    my $center = pack('ii', 0, 0);
     SDL_RenderCopyEx($renderer, $tex, $src_rect, $dst_rect, 0, $ffi->cast('string'=>'opaque', $center), $flip ? 1 : 0);
     free($src_rect); free($dst_rect);
 };
 
-# ---
 my $draw_border = sub {
     my ($x1, $y1, $x2, $y2, $x3, $y3, $x4, $y4) = @_;
     SDL_SetRenderDrawBlendMode($renderer, 1);
-    SDL_SetRenderDrawColor($renderer, 255, 105, 180, 220);   # розовый, почти непрозрачный
-
-    # Рисуем 4 ромба со смещением для толщины 2 пикселя
+    SDL_SetRenderDrawColor($renderer, 255, 105, 180, 220);
     for my $dx (0, 1) {
         for my $dy (0, 1) {
             SDL_RenderDrawLine($renderer, $x1+$dx, $y1+$dy, $x2+$dx, $y2+$dy);
@@ -315,9 +303,8 @@ my $draw_border = sub {
             SDL_RenderDrawLine($renderer, $x4+$dx, $y4+$dy, $x1+$dx, $y1+$dy);
         }
     }
-
     SDL_SetRenderDrawBlendMode($renderer, 0);
-	SDL_SetRenderDrawColor($renderer, 255, 255, 255, 255);
+    SDL_SetRenderDrawColor($renderer, 255, 255, 255, 255);
 };
 
 my $reset_color = sub {
@@ -325,7 +312,6 @@ my $reset_color = sub {
 };
 
 my $draw_line = sub { SDL_RenderDrawLine($renderer, @_); };
-
 
 # --- Буквенные наборы для надписей меню ---
 my @menu_label_strings = ("Stato", "Magia", "Oggetti", "Cerca");
@@ -344,16 +330,16 @@ for my $word (@menu_label_strings) {
     push @menu_label_letters, \@word_tex;
 }
 
-# --- Создание меню ---
+# --- Создание главного меню ---
 my $menu = Menu->new(
     renderer            => $renderer,
     draw_cb             => $draw_sprite,
     draw_cb_flip        => $draw_sprite_flip,
     draw_border         => $draw_border,
     reset_color         => $reset_color,
-	set_texture_color_mod => sub { SDL_SetTextureColorMod(@_) },
+    set_texture_color_mod => sub { SDL_SetTextureColorMod(@_) },
     label_panel_tex     => $label_panel_tex,
-    label_textures      => [],                               # больше не используется
+    label_textures      => [],
     label_letter_textures => \@menu_label_letters,
     letter_w            => $LETTER_W,
     letter_h            => $LETTER_H,
@@ -364,14 +350,38 @@ my $menu = Menu->new(
     textures            => \@button_textures,
 );
 
-# Флаги движения (управляются событиями)
+# --- Загрузка текстур для меню статуса ---
+my $load_status_tex = sub {
+    my ($path) = @_;
+    die "Status texture not found: $path" unless -f $path;
+    my $surf = IMG_Load($path) or die "IMG_Load $path: " . SDL_GetError();
+    my $tex = SDL_CreateTextureFromSurface($renderer, $surf);
+    SDL_FreeSurface($surf);
+    SDL_SetTextureBlendMode($tex, 0x00000001);
+    return $tex;
+};
+
+my $status_portrait_tex = $load_status_tex->('assets/ui/portrait.png');
+my $status_panel1_tex   = $load_status_tex->('assets/ui/panel1.png');
+my $status_panel2_tex   = $load_status_tex->('assets/ui/panel2.png');
+
+my $status_menu = StatusMenu->new(
+    renderer     => $renderer,
+    draw_cb      => $draw_sprite,
+    win_w        => $WIN_W,
+    win_h        => $WIN_H,
+    portrait_tex => $status_portrait_tex,
+    panel1_tex   => $status_panel1_tex,
+    panel2_tex   => $status_panel2_tex,
+);
+
+# Флаги движения
 my %move_flags = ( up => 0, down => 0, left => 0, right => 0 );
 
 my $event_ptr = malloc(56);
 my $src_rect  = malloc(16);
 my $dst_rect  = malloc(16);
 my $running   = 1;
-
 
 # --- Запуск интро ---
 my $intro = Intro->new(
@@ -381,28 +391,24 @@ my $intro = Intro->new(
     win_h     => $WIN_H,
 );
 
-
 while (!$intro->update()) {
-	
-    # Обработка событий (только нажатия A или D)
     while (SDL_PollEvent($event_ptr)) {
         my $event_str = "\0" x 56;
         memcpy($ffi->cast('string' => 'opaque', $event_str), $event_ptr, 56);
         my $type = unpack('V', substr($event_str, 0, 4));
-        if ($type == 0x100) {   # SDL_QUIT (крестик)
+        if ($type == 0x100) {
             $running = 0;
-            last;               # выход из интро-цикла
+            last;
         }
-        elsif ($type == 0x300) {   # SDL_KEYDOWN
+        elsif ($type == 0x300) {
             my $scancode = unpack('V', substr($event_str, 16, 4));
             if ($scancode == 0x04 || $scancode == 0x07) {
                 $intro->start_fade_out();
             }
         }
     }
-    last unless $running;   # если закрыли окно, сразу выходим из интро
+    last unless $running;
 
-    # Чёрный фон всегда
     SDL_SetRenderDrawColor($renderer, 0, 0, 0, 255);
     SDL_RenderClear($renderer);
 
@@ -410,7 +416,6 @@ while (!$intro->update()) {
 
     if ($state ne 'BLACK_WAIT' && $state ne 'DONE') {
         if ($state ne 'FLICKER' || $intro->flicker_visible) {
-            # Рисуем логотип (уменьшенный)
             my $half_w = $intro->logo_w / 2;
             my $half_h = $intro->logo_h / 2;
             my $dx = ($intro->win_w - $half_w) / 2;
@@ -419,20 +424,20 @@ while (!$intro->update()) {
             my $src_pack = pack('iiii', 0, 0, $intro->logo_w, $intro->logo_h);
             my $dst_pack = pack('iiii', $dx, $dy, $half_w, $half_h);
 
-            my $src_rect = malloc(16);
-            memcpy($src_rect, $ffi->cast('string'=>'opaque', $src_pack), 16);
-            my $dst_rect = malloc(16);
-            memcpy($dst_rect, $ffi->cast('string'=>'opaque', $dst_pack), 16);
+            my $src_rect_tmp = malloc(16);
+            memcpy($src_rect_tmp, $ffi->cast('string'=>'opaque', $src_pack), 16);
+            my $dst_rect_tmp = malloc(16);
+            memcpy($dst_rect_tmp, $ffi->cast('string'=>'opaque', $dst_pack), 16);
 
             if ($state eq 'FADE_OUT' || $state eq 'FADE_IN') {
                 SDL_SetTextureAlphaMod($intro->logo_tex, $intro->fade_alpha);
             }
-            SDL_RenderCopy($renderer, $intro->logo_tex, $src_rect, $dst_rect);
+            SDL_RenderCopy($renderer, $intro->logo_tex, $src_rect_tmp, $dst_rect_tmp);
             if ($state eq 'FADE_OUT' || $state eq 'FADE_IN') {
                 SDL_SetTextureAlphaMod($intro->logo_tex, 255);
             }
-            free($src_rect);
-            free($dst_rect);
+            free($src_rect_tmp);
+            free($dst_rect_tmp);
         }
 
         if ($state eq 'WAIT_START' && $intro->show_press_start) {
@@ -451,8 +456,8 @@ while (!$intro->update()) {
 if ($music_path && -f $music_path) {
     my $music = Mix_LoadMUS($music_path);
     if ($music) {
-        Mix_VolumeMusic(64);          # громкость 64 (0-128)
-        Mix_PlayMusic($music, -1);    # -1 = бесконечный цикл
+        Mix_VolumeMusic(64);
+        Mix_PlayMusic($music, -1);
     }
 }
 
@@ -463,8 +468,8 @@ while ($running) {
         memcpy($ffi->cast('string' => 'opaque', $event_str), $event_ptr, 56);
         my $type = unpack('V', substr($event_str, 0, 4));
 
-        if ($type == 0x100) { $running = 0; }                 # SDL_QUIT
-        elsif ($type == 0x300) {   # SDL_KEYDOWN
+        if ($type == 0x100) { $running = 0; }
+        elsif ($type == 0x300) {
             my $scancode = unpack('V', substr($event_str, 16, 4));
             my $sym      = unpack('V', substr($event_str, 20, 4));
 
@@ -473,20 +478,39 @@ while ($running) {
             elsif ($sym == 0x40000051) { $move_flags{down}  = 1; }
             elsif ($sym == 0x40000050) { $move_flags{left}  = 1; }
             elsif ($sym == 0x4000004F) { $move_flags{right} = 1; }
-            # --- меню (по сканкодам) ---
-            elsif ($scancode == 0x04) {
-                $menu->open();
-                %move_flags = ( up => 0, down => 0, left => 0, right => 0 );
+			elsif ($scancode == 0x04 || $sym == 97 || $sym == 65) {
+				# Клавиша A (a/A) — открыть главное меню
+				$menu->open();
+				%move_flags = ( up => 0, down => 0, left => 0, right => 0 );
+			}
+			elsif ($scancode == 0x07 || $sym == 100 || $sym == 68) {
+				# Клавиша D (d/D) — открыть экран статуса
+				$status_menu->open();
+				$menu->close();
+				%move_flags = ( up => 0, down => 0, left => 0, right => 0 );
+			}
+            elsif ($scancode == 0x16) {   # S
+                if ($status_menu->is_active) {
+                    $status_menu->close();
+                    $menu->open();
+                } else {
+                    $menu->close();
+                }
             }
-            elsif ($scancode == 0x07) {
-                $menu->open();
-                %move_flags = ( up => 0, down => 0, left => 0, right => 0 );
+            elsif ($scancode == 0x28) {   # Enter
+                if ($menu->{visible}) {
+                    if ($menu->{selected} == 0) {
+                        $status_menu->open();
+                        $menu->close();
+                        %move_flags = ( up => 0, down => 0, left => 0, right => 0 );
+                    }
+                } elsif ($status_menu->is_active) {
+                    $status_menu->close();
+                    $menu->open();
+                }
             }
-			
-            elsif ($scancode == 0x16) { $menu->close(); }   # S
         }
-		
-        elsif ($type == 0x301) {                                # SDL_KEYUP
+        elsif ($type == 0x301) {
             my $key = unpack('V', substr($event_str, 20, 4));
             if ($key == 0x40000052) { $move_flags{up}    = 0; }
             elsif ($key == 0x40000051) { $move_flags{down}  = 0; }
@@ -497,22 +521,19 @@ while ($running) {
 
     # --- Расписание дождя ---
     my ($sec, $min, $hour) = (localtime)[0,1,2];
-
     if ($hour != $last_rain_hour) {
-        $rain_minute = int(rand(51));          # 0..50
+        $rain_minute = int(rand(51));
         $last_rain_hour = $hour;
         $rain_scheduled = 1;
         $rain_active = 0;
     }
-
     if ($rain_scheduled && !$rain_active && $min == $rain_minute) {
         $rain_active = 1;
         $rain_scheduled = 0;
-        my $duration = 120 + int(rand(301));   # 120..420 секунд (2..7 минут)
+        my $duration = 120 + int(rand(301));
         $rain_start_time = time();
         $rain_end_time = $rain_start_time + $duration;
     }
-
     if ($rain_active && time() >= $rain_end_time) {
         $rain_active = 0;
         $rain->clear();
@@ -520,13 +541,12 @@ while ($running) {
 
     $menu->handle_input(\%move_flags);
     $menu->update();
-	
-    if ($menu->{visible}) {
+
+    if ($menu->{visible} || $status_menu->is_active) {
         $player->update({ up => 0, down => 0, left => 0, right => 0 });
     } else {
         $player->update(\%move_flags);
     }
-
 
     # Центр игрока в мировых координатах
     my $px = $player->{tile_x} * $TILE_SIZE + $TILE_SIZE/2;
@@ -538,37 +558,32 @@ while ($running) {
         elsif ($player->{direction} eq 'up')    { $py -= $player->{pixel_offset}; }
     }
 
-    # Проверяем, выходит ли игрок за мёртвую зону
-
     my $target_x = $px - $WIN_W / 2;
     my $target_y = $py - $WIN_H / 2;
-
     $target_x = 0 if $target_x < 0;
     my $max_x = $map_cols * $TILE_SIZE - $WIN_W;
     $target_x = $max_x if $target_x > $max_x;
-
     $target_y = -$MAP_Y if $target_y < -$MAP_Y;
     my $max_y = $map_rows * $TILE_SIZE - $WIN_H;
     $target_y = $max_y if $target_y > $max_y;
 
     $camera->{target_x} = $target_x;
     $camera->{target_y} = $target_y;
-
     $camera->update();
     my $cam_x = $camera->x;
     my $cam_y = $camera->y;
 
     $player->set_camera_offset($MAP_X - $cam_x, -$cam_y);
-			
-	if ($rain_active) {
-    $rain->update($TILE_SIZE, $map_cols * $TILE_SIZE, $map_rows * $TILE_SIZE, $cam_x, $cam_y);
+
+    if ($rain_active) {
+        $rain->update($TILE_SIZE, $map_cols * $TILE_SIZE, $map_rows * $TILE_SIZE, $cam_x, $cam_y);
     }
 
     # --- Рендер ---
     SDL_SetRenderDrawColor($renderer, 0,0,0,255);
     SDL_RenderClear($renderer);
 
-    # Шахматный фон (только внутри карты, на пустых тайлах)
+    # Шахматный фон
     if ($alpha_tex) {
         my $src_alpha = pack('iiii', 0, 0, $TILE_SIZE, $TILE_SIZE);
         my $src_tmp   = malloc(16);
@@ -584,9 +599,8 @@ while ($running) {
             for my $col ($start_col .. $end_col) {
                 next if $col < 0 || $col >= $map_cols;
                 next if $map[$row][$col] != 0;
-
                 my $dx = ($col * $TILE_SIZE) - $cam_x + $MAP_X;
-                my $dy = ($row * $TILE_SIZE) - $cam_y;          # БЕЗ +$MAP_Y
+                my $dy = ($row * $TILE_SIZE) - $cam_y;
                 my $dst_alpha = pack('iiii', $dx, $dy, $TILE_SIZE, $TILE_SIZE);
                 my $dst_tmp   = malloc(16);
                 memcpy($dst_tmp, $ffi->cast('string' => 'opaque', $dst_alpha), 16);
@@ -609,33 +623,36 @@ while ($running) {
             next if $col < 0 || $col >= $map_cols;
             my $id = $map[$row][$col];
             next if $id < 0;
-
             my ($sx, $sy) = tile_src($id);
             my $src_pack = pack('iiii', $sx, $sy, $TILE_SIZE, $TILE_SIZE);
             memcpy($src_rect, $ffi->cast('string' => 'opaque', $src_pack), 16);
             my $dx = ($col * $TILE_SIZE) - $cam_x + $MAP_X;
-            my $dy = ($row * $TILE_SIZE) - $cam_y;              # БЕЗ +$MAP_Y
+            my $dy = ($row * $TILE_SIZE) - $cam_y;
             my $dst_pack = pack('iiii', $dx, $dy, $TILE_SIZE, $TILE_SIZE);
             memcpy($dst_rect, $ffi->cast('string' => 'opaque', $dst_pack), 16);
-
             SDL_RenderCopy($renderer, $tileset_tex, $src_rect, $dst_rect);
         }
     }
 
-	$player->draw();
+    $player->draw();
     if ($rain_active) {
         SDL_SetRenderDrawBlendMode($renderer, 1);
         SDL_SetRenderDrawColor($renderer, 200, 230, 255, 255);
         $rain->draw($renderer, $cam_x, $cam_y, $draw_line);
         SDL_SetRenderDrawBlendMode($renderer, 0);
     }
-	
-	$menu->draw();              # <-- рисовать меню поверх всего
-			
+
+    if ($status_menu->is_active) {
+        $status_menu->draw();
+    } else {
+        $menu->draw();
+    }
+
     SDL_RenderPresent($renderer);
     SDL_Delay(16);
 }
 
+# --- Очистка ресурсов ---
 free($src_rect); free($dst_rect); free($event_ptr);
 SDL_DestroyTexture($alpha_tex) if $alpha_tex;
 SDL_DestroyTexture($sprite_tex);
@@ -645,4 +662,7 @@ SDL_DestroyWindow($window);
 Mix_CloseAudio();
 SDL_DestroyTexture($label_panel_tex) if $label_panel_tex;
 SDL_DestroyTexture($_) for values %letter_tex;
+SDL_DestroyTexture($status_portrait_tex) if $status_portrait_tex;
+SDL_DestroyTexture($status_panel1_tex)   if $status_panel1_tex;
+SDL_DestroyTexture($status_panel2_tex)   if $status_panel2_tex;
 SDL_Quit();

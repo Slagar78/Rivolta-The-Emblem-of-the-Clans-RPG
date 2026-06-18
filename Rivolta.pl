@@ -462,62 +462,77 @@ if ($music_path && -f $music_path) {
 }
 
 while ($running) {
-    # --- Обработка событий ---
-    while (SDL_PollEvent($event_ptr)) {
-        my $event_str = "\0" x 56;
-        memcpy($ffi->cast('string' => 'opaque', $event_str), $event_ptr, 56);
-        my $type = unpack('V', substr($event_str, 0, 4));
 
-        if ($type == 0x100) { $running = 0; }
-        elsif ($type == 0x300) {
-            my $scancode = unpack('V', substr($event_str, 16, 4));
-            my $sym      = unpack('V', substr($event_str, 20, 4));
+# --- Обработка событий ---
+while (SDL_PollEvent($event_ptr)) {
+    my $event_str = "\0" x 56;
+    memcpy($ffi->cast('string' => 'opaque', $event_str), $event_ptr, 56);
+    
+    my $type = unpack('V', substr($event_str, 0, 4));
 
-            if ($sym == 27) { $running = 0; }
-            elsif ($sym == 0x40000052) { $move_flags{up}    = 1; }
-            elsif ($sym == 0x40000051) { $move_flags{down}  = 1; }
-            elsif ($sym == 0x40000050) { $move_flags{left}  = 1; }
-            elsif ($sym == 0x4000004F) { $move_flags{right} = 1; }
-			elsif ($scancode == 0x04 || $sym == 97 || $sym == 65) {
-				# Клавиша A (a/A) — открыть главное меню
-				$menu->open();
-				%move_flags = ( up => 0, down => 0, left => 0, right => 0 );
-			}
-			elsif ($scancode == 0x07 || $sym == 100 || $sym == 68) {
-				# Клавиша D (d/D) — открыть экран статуса
-				$status_menu->open();
-				$menu->close();
-				%move_flags = ( up => 0, down => 0, left => 0, right => 0 );
-			}
-            elsif ($scancode == 0x16) {   # S
-                if ($status_menu->is_active) {
-                    $status_menu->close();
-                    $menu->open();
-                } else {
-                    $menu->close();
-                }
+    if ($type == 0x100) { 
+        $running = 0; 
+    }
+    elsif ($type == 0x300) {  # KEYDOWN
+        my $scancode = unpack('V', substr($event_str, 16, 4));
+        my $sym      = unpack('V', substr($event_str, 20, 4));
+
+        if ($sym == 27) { 
+            $running = 0; 
+        }
+
+        # Движение стрелками
+        if ($sym == 0x40000052) { $move_flags{up}    = 1; }
+        if ($sym == 0x40000051) { $move_flags{down}  = 1; }
+        if ($sym == 0x40000050) { $move_flags{left}  = 1; }
+        if ($sym == 0x4000004F) { $move_flags{right} = 1; }
+
+        # ====================== A и D ======================
+        if ($scancode == 4 || $scancode == 7) {   # A или D
+            print ">>> A или D нажата\n";
+
+            if ($menu->{visible} && $menu->{selected} == 0) {
+                # Если уже в меню и выбрано Stato → открываем статус
+                $status_menu->open();
+                $menu->close();
+            } else {
+                # В остальных случаях — открываем главное меню
+                $menu->open();
+                $status_menu->close();
             }
-            elsif ($scancode == 0x28) {   # Enter
-                if ($menu->{visible}) {
-                    if ($menu->{selected} == 0) {
-                        $status_menu->open();
-                        $menu->close();
-                        %move_flags = ( up => 0, down => 0, left => 0, right => 0 );
-                    }
-                } elsif ($status_menu->is_active) {
-                    $status_menu->close();
-                    $menu->open();
-                }
+            %move_flags = ( up => 0, down => 0, left => 0, right => 0 );
+        }
+
+        if ($scancode == 0x16) { # S
+            if ($status_menu->is_active) {
+                $status_menu->close();
+                $menu->open();
+            } else {
+                $menu->close();
             }
         }
-        elsif ($type == 0x301) {
-            my $key = unpack('V', substr($event_str, 20, 4));
-            if ($key == 0x40000052) { $move_flags{up}    = 0; }
-            elsif ($key == 0x40000051) { $move_flags{down}  = 0; }
-            elsif ($key == 0x40000050) { $move_flags{left}  = 0; }
-            elsif ($key == 0x4000004F) { $move_flags{right} = 0; }
+
+        if ($scancode == 0x28) { # Enter
+            if ($menu->{visible}) {
+                if ($menu->{selected} == 0) {
+                    $status_menu->open();
+                    $menu->close();
+                    %move_flags = ( up => 0, down => 0, left => 0, right => 0 );
+                }
+            } elsif ($status_menu->is_active) {
+                $status_menu->close();
+                $menu->open();
+            }
         }
     }
+    elsif ($type == 0x301) {  # KEYUP
+        my $key = unpack('V', substr($event_str, 20, 4));
+        if ($key == 0x40000052) { $move_flags{up}    = 0; }
+        if ($key == 0x40000051) { $move_flags{down}  = 0; }
+        if ($key == 0x40000050) { $move_flags{left}  = 0; }
+        if ($key == 0x4000004F) { $move_flags{right} = 0; }
+    }
+}
 
     # --- Расписание дождя ---
     my ($sec, $min, $hour) = (localtime)[0,1,2];

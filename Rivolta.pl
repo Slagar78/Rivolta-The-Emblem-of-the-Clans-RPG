@@ -361,18 +361,20 @@ my $load_status_tex = sub {
     return $tex;
 };
 
-my $status_portrait_tex = $load_status_tex->('assets/ui/portrait.png');
-my $status_panel1_tex   = $load_status_tex->('assets/ui/panel1.png');
-my $status_panel2_tex   = $load_status_tex->('assets/ui/panel2.png');
+my $status_frame_tex     = $load_status_tex->('assets/ui/portrait.png');
+my $status_character_tex = $load_status_tex->('assets/portraits/Bryan.png');
+my $status_panel1_tex    = $load_status_tex->('assets/ui/panel1.png');
+my $status_panel2_tex    = $load_status_tex->('assets/ui/panel2.png');
 
 my $status_menu = StatusMenu->new(
-    renderer     => $renderer,
-    draw_cb      => $draw_sprite,
-    win_w        => $WIN_W,
-    win_h        => $WIN_H,
-    portrait_tex => $status_portrait_tex,
-    panel1_tex   => $status_panel1_tex,
-    panel2_tex   => $status_panel2_tex,
+    renderer      => $renderer,
+    draw_cb       => $draw_sprite,
+    win_w         => $WIN_W,
+    win_h         => $WIN_H,
+    frame_tex     => $status_frame_tex,
+    character_tex => $status_character_tex,
+    panel1_tex    => $status_panel1_tex,
+    panel2_tex    => $status_panel2_tex,
 );
 
 # Флаги движения
@@ -677,7 +679,8 @@ SDL_DestroyWindow($window);
 Mix_CloseAudio();
 SDL_DestroyTexture($label_panel_tex) if $label_panel_tex;
 SDL_DestroyTexture($_) for values %letter_tex;
-SDL_DestroyTexture($status_portrait_tex) if $status_portrait_tex;
+SDL_DestroyTexture($status_frame_tex)     if $status_frame_tex;
+SDL_DestroyTexture($status_character_tex) if $status_character_tex;
 SDL_DestroyTexture($status_panel1_tex)   if $status_panel1_tex;
 SDL_DestroyTexture($status_panel2_tex)   if $status_panel2_tex;
 SDL_Quit();
